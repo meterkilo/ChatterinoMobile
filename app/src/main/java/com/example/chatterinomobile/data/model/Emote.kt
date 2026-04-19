@@ -10,6 +10,7 @@ package com.example.chatterinomobile.data.model
 data class Emote(
     val id: String,
     val name: String,
+    val urls: EmoteUrls,
     val isAnimated: Boolean,
     val isZeroWidth: Boolean = false,
     val provider: EmoteProvider,
