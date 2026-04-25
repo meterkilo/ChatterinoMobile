@@ -46,6 +46,17 @@ interface ChatRepository {
 
     val channelHydrationStates: StateFlow<Map<String, ChannelHydrationState>>
 
+    /**
+     * Returns the most recent persisted messages for [channelLogin], oldest-
+     * first. ViewModels emit these into the UI before any new live messages
+     * arrive, giving cold-start scrollback without a network round trip.
+     *
+     * The login → channel-id resolution is handled internally; if we have
+     * never resolved that login (no prior join) the result is empty rather
+     * than blocking on Helix.
+     */
+    suspend fun recentHistory(channelLogin: String, limit: Int = 500): List<ChatMessage>
+
     /** Idempotent. Establishes the WebSocket + logs in (anonymously, for now). */
     suspend fun connect()
 

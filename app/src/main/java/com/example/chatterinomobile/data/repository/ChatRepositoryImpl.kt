@@ -1,5 +1,6 @@
 package com.example.chatterinomobile.data.repository
 
+import com.example.chatterinomobile.data.local.MessageHistoryStore
 import com.example.chatterinomobile.data.model.ChatMessage
 import com.example.chatterinomobile.data.model.Channel
 import com.example.chatterinomobile.data.model.ChannelHydrationState
@@ -21,8 +22,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -52,7 +56,8 @@ class ChatRepositoryImpl(
     private val enricher: MessageEnricher,
     private val channelRepository: ChannelRepository,
     private val badgeRepository: BadgeRepository,
-    private val emoteRepository: EmoteRepository
+    private val emoteRepository: EmoteRepository,
+    private val historyStore: MessageHistoryStore
 ) : ChatRepository {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -116,13 +121,75 @@ class ChatRepositoryImpl(
         }
     }
 
+    /**
+     * The enriched message stream is shared (`shareIn`) so we don't re-run
+     * the mapper + enricher once per UI collector. Crucially, the side-effect
+     * `onEach { historyStore.enqueue(...) }` runs in the upstream — *before*
+     * sharing — which means persistence happens exactly once per message
+     * regardless of how many ViewModels are observing.
+     *
+     * Replay 0 because cold-start scrollback is served explicitly via
+     * [recentHistory]; we don't want late subscribers to re-receive a
+     * snapshot of in-flight live messages and double-render.
+     */
     override val messages: Flow<ChatMessage> =
         ircClient.incoming
             .mapNotNull { raw -> mapper.map(raw) }
             .map { msg -> enricher.enrich(msg) }
+            .onEach { msg -> historyStore.enqueue(msg) }
+            .shareIn(scope, SharingStarted.Eagerly, replay = 0)
 
     override val moderationEvents: Flow<ModerationEvent> =
-        ircClient.incoming.mapNotNull { raw -> moderationMapper.map(raw) }
+        ircClient.incoming
+            .mapNotNull { raw -> moderationMapper.map(raw) }
+            .onEach { event -> mirrorModerationToHistory(event) }
+            .shareIn(scope, SharingStarted.Eagerly, replay = 0)
+
+    override suspend fun recentHistory(channelLogin: String, limit: Int): List<ChatMessage> {
+        val normalizedLogin = channelLogin.lowercase().removePrefix("#")
+        // History is keyed by Twitch channel ID, not login, because logins
+        // are mutable. If the user is loading scrollback for a channel they
+        // haven't joined yet in this process we need to resolve the login
+        // first; the cache hit case skips the network call.
+        val channel = resolveChannel(normalizedLogin) ?: return emptyList()
+        return historyStore.recent(channel.id, limit)
+    }
+
+    /**
+     * Mirror moderation events into the persisted log so scrollback after a
+     * rejoin honors the same redactions the user already saw live. We
+     * deliberately resolve the channel lazily (and only for non-trivial
+     * variants) to avoid a Helix call for every delete event.
+     */
+    private fun mirrorModerationToHistory(event: ModerationEvent) {
+        scope.launch {
+            runCatching {
+                when (event) {
+                    is ModerationEvent.ChatCleared -> {
+                        val channel = channelCacheByLogin[event.channelLogin]
+                            ?: channelRepository.getChannelByLogin(event.channelLogin)
+                            ?: return@runCatching
+                        historyStore.deleteByChannel(channel.id)
+                    }
+                    is ModerationEvent.UserBanned -> {
+                        val channel = channelCacheByLogin[event.channelLogin]
+                            ?: channelRepository.getChannelByLogin(event.channelLogin)
+                            ?: return@runCatching
+                        historyStore.deleteByChannelAndAuthor(channel.id, event.targetUserId)
+                    }
+                    is ModerationEvent.UserTimedOut -> {
+                        val channel = channelCacheByLogin[event.channelLogin]
+                            ?: channelRepository.getChannelByLogin(event.channelLogin)
+                            ?: return@runCatching
+                        historyStore.deleteByChannelAndAuthor(channel.id, event.targetUserId)
+                    }
+                    is ModerationEvent.MessageDeleted -> {
+                        historyStore.deleteByMessageId(event.targetMessageId)
+                    }
+                }
+            }
+        }
+    }
 
     override suspend fun connect() {
         shouldReconnect = true

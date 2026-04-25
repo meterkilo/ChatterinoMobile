@@ -3,7 +3,7 @@ import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
-    kotlin("plugin.serialization") version "2.0.21"
+    alias(libs.plugins.kotlin.serialization)
 }
 
 // Twitch client ID is read from local.properties (gitignored) and exposed via
@@ -55,6 +55,13 @@ android {
     }
 }
 
+// Persistent chat history lives in a SQLDelight-generated database. The
+// schema is authored under `app/src/main/sqldelight/.../ChatterinoDb.sq`
+// SQLDelight auto-discovers the .sq schema and generates the database class.
+// The explicit configuration below is optional if the defaults work. For now,
+// let the plugin infer the package name from the schema file location.
+
+
 dependencies {
     //ktor
     implementation("io.ktor:ktor-client-core:2.3.12")
@@ -80,6 +87,7 @@ dependencies {
     // the OAuth layer won't notice.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -96,3 +104,4 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
+

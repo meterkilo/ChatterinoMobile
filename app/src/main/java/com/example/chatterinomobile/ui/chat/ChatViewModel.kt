@@ -2,293 +2,154 @@ package com.example.chatterinomobile.ui.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.chatterinomobile.data.model.ChannelHydrationState
 import com.example.chatterinomobile.data.model.ChatMessage
 import com.example.chatterinomobile.data.model.ReplyMetadata
-import com.example.chatterinomobile.data.model.RoomState
 import com.example.chatterinomobile.data.model.SendMessageResult
-import com.example.chatterinomobile.data.model.TwitchDeviceAuthorization
-import com.example.chatterinomobile.data.model.TwitchDeviceFlowState
-import com.example.chatterinomobile.data.model.UserChatState
-import com.example.chatterinomobile.data.repository.AuthRepository
 import com.example.chatterinomobile.data.repository.ChatRepository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * First real screen-facing ViewModel for the app.
+ * Owns the visible message buffer and send pipeline for a single active channel.
  *
- * It intentionally depends on the stable repository contracts rather than raw
- * IRC/API implementation details, which keeps the UI layer insulated while the
- * backend continues to evolve underneath it.
+ * Joined-channel selection lives in `ChannelTabsViewModel`; auth lives in
+ * `AuthViewModel`. The screen-level glue calls [setActiveChannel] whenever the
+ * user picks a different tab — this VM then:
+ *   1. Resets the buffer.
+ *   2. Seeds it with persisted scrollback from
+ *      [ChatRepository.recentHistory], so reconnect/cold-start doesn't show
+ *      an empty pane.
+ *   3. Filters the live `messages` flow down to that channel's frames.
+ *
+ * The live-message collector is intentionally one job per active channel
+ * rather than one global collector with an `if (msg.channelId == active)`
+ * guard. Cancelling and relaunching is cheap (the underlying flow is
+ * `shareIn`-backed) and it makes "we changed channels mid-stream" an
+ * impossible state instead of a race window.
  */
 class ChatViewModel(
-    private val authRepository: AuthRepository,
     private val chatRepository: ChatRepository
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(ChatUiState(isAuthLoading = true))
+    private val _uiState = MutableStateFlow(ChatUiState())
     val uiState = _uiState.asStateFlow()
 
-    init {
-        viewModelScope.launch {
-            runCatching { chatRepository.connect() }
-                .onFailure { updateState { copy(chatErrorMessage = it.message ?: "Failed to connect chat") } }
-        }
+    private var liveCollector: Job? = null
 
-        viewModelScope.launch { refreshAuthSession() }
+    /**
+     * Re-bind the visible buffer to a different channel.
+     *
+     * [channelId] is the Twitch room-id once hydration completes; pass null
+     * before then. The id matters because PRIVMSG frames use it (not the
+     * login) on the wire, and [ChatMessage.channelId] is whichever the
+     * mapper had at parse time. Without it we'd miss messages on freshly
+     * joined channels until hydration lands.
+     */
+    fun setActiveChannel(channelLogin: String?, channelId: String? = null) {
+        val state = _uiState.value
+        if (state.activeChannelLogin == channelLogin && state.activeChannelId == channelId) return
 
-        viewModelScope.launch {
-            chatRepository.messages.collect { message ->
-                val activeChannelLogin = _uiState.value.activeChannelLogin ?: return@collect
-                val hydration = _uiState.value.channelHydration
-                val activeChannelId = hydration?.channelId
-                val belongsToActiveChannel =
-                    message.channelId == activeChannelLogin ||
-                        (activeChannelId != null && message.channelId == activeChannelId)
+        val isChannelSwitch = state.activeChannelLogin != channelLogin
+        liveCollector?.cancel()
 
-                if (!belongsToActiveChannel) return@collect
-
-                updateState {
-                    copy(
-                        recentMessages = (recentMessages + message).takeLast(MAX_RECENT_MESSAGES)
-                    )
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            chatRepository.roomStates.collect { states ->
-                updateState {
-                    copy(roomState = selectRoomState(states, activeChannelLogin, channelHydration))
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            chatRepository.channelUserStates.collect { states ->
-                updateState {
-                    copy(currentUserState = selectUserState(states, activeChannelLogin, channelHydration))
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            chatRepository.channelHydrationStates.collect { states ->
-                updateState {
-                    val hydration = activeChannelLogin?.let { states[it] }
-                    copy(
-                        channelHydration = hydration,
-                        roomState = selectRoomState(chatRepository.roomStates.value, activeChannelLogin, hydration),
-                        currentUserState = selectUserState(chatRepository.channelUserStates.value, activeChannelLogin, hydration)
-                    )
-                }
-            }
-        }
-    }
-
-    fun startLogin() {
-        viewModelScope.launch {
-            runCatching {
-                updateState {
-                    copy(
-                        isAuthLoading = true,
-                        authErrorMessage = null,
-                        authSuccessMessage = null
-                    )
-                }
-
-                val deviceFlow = authRepository.startDeviceFlow()
-                if (deviceFlow == null) {
-                    updateState {
-                        copy(
-                            isAuthLoading = false,
-                            authErrorMessage = "No Twitch client ID is configured in local.properties."
-                        )
-                    }
-                    return@launch
-                }
-
-                updateState {
-                    copy(
-                        isAuthLoading = false,
-                        isAwaitingAuthorization = true,
-                        authDeviceFlow = deviceFlow,
-                        authErrorMessage = null,
-                        authSuccessMessage = null
-                    )
-                }
-
-                when (val result = authRepository.awaitDeviceAuthorization(deviceFlow)) {
-                    is TwitchDeviceAuthorization.Authorized -> {
-                        refreshAuthSession(successMessage = "Twitch login complete.")
-                    }
-                    TwitchDeviceAuthorization.Denied -> {
-                        updateState {
-                            copy(
-                                isAwaitingAuthorization = false,
-                                authErrorMessage = "Authorization was denied in Twitch."
-                            )
-                        }
-                    }
-                    TwitchDeviceAuthorization.Expired -> {
-                        updateState {
-                            copy(
-                                isAwaitingAuthorization = false,
-                                authErrorMessage = "The device code expired before authorization completed."
-                            )
-                        }
-                    }
-                    is TwitchDeviceAuthorization.Failed -> {
-                        updateState {
-                            copy(
-                                isAwaitingAuthorization = false,
-                                authErrorMessage = result.message
-                            )
-                        }
-                    }
-                }
-            }.onFailure {
-                updateState {
-                    copy(
-                        isAuthLoading = false,
-                        isAwaitingAuthorization = false,
-                        authErrorMessage = it.message ?: "Twitch auth failed"
-                    )
-                }
-            }
-        }
-    }
-
-    fun logout() {
-        viewModelScope.launch {
-            runCatching {
-                authRepository.clearSession()
-                refreshAuthSession()
-            }.onFailure {
-                updateState {
-                    copy(authErrorMessage = it.message ?: "Logout failed")
-                }
-            }
-        }
-    }
-
-    fun joinChannel(channelLogin: String) {
-        val normalizedLogin = channelLogin.lowercase().removePrefix("#").trim()
-        if (normalizedLogin.isBlank()) return
-
-        updateState {
+        update {
             copy(
-                activeChannelLogin = normalizedLogin,
-                recentMessages = emptyList(),
+                activeChannelLogin = channelLogin,
+                activeChannelId = channelId,
+                // Only wipe the buffer if the user actually moved tabs — a
+                // pure hydration update (login same, id newly known) must not
+                // clear what's already on screen.
+                recentMessages = if (isChannelSwitch) emptyList() else recentMessages,
+                isLoadingHistory = isChannelSwitch && channelLogin != null,
                 sendStatusMessage = null,
-                sendErrorMessage = null,
-                chatErrorMessage = null
+                sendErrorMessage = null
             )
         }
 
-        viewModelScope.launch {
-            runCatching { chatRepository.joinChannel(normalizedLogin) }
-                .onFailure {
-                    updateState {
-                        copy(chatErrorMessage = it.message ?: "Failed to join channel")
+        if (channelLogin == null) return
+
+        if (isChannelSwitch) {
+            viewModelScope.launch {
+                val history = runCatching { chatRepository.recentHistory(channelLogin) }
+                    .getOrDefault(emptyList())
+                if (_uiState.value.activeChannelLogin == channelLogin) {
+                    update {
+                        copy(
+                            recentMessages = history.takeLast(MAX_RECENT_MESSAGES),
+                            isLoadingHistory = false
+                        )
                     }
                 }
+            }
+        }
+
+        liveCollector = viewModelScope.launch {
+            chatRepository.messages.collect { message ->
+                val current = _uiState.value
+                val active = current.activeChannelLogin ?: return@collect
+                if (!message.belongsTo(active, current.activeChannelId)) return@collect
+                update {
+                    copy(recentMessages = (recentMessages + message).takeLast(MAX_RECENT_MESSAGES))
+                }
+            }
         }
     }
 
     fun sendMessage(text: String) {
-        val activeChannel = _uiState.value.activeChannelLogin ?: run {
-            updateState { copy(sendErrorMessage = "Join a channel first.") }
+        val active = _uiState.value.activeChannelLogin ?: run {
+            update { copy(sendErrorMessage = "Join a channel first.") }
             return
         }
 
         viewModelScope.launch {
-            when (val result = chatRepository.sendMessage(activeChannel, text)) {
-                SendMessageResult.Sent -> {
-                    updateState {
-                        copy(sendStatusMessage = "Message sent.", sendErrorMessage = null)
-                    }
+            when (val result = chatRepository.sendMessage(active, text)) {
+                SendMessageResult.Sent -> update {
+                    copy(sendStatusMessage = "Message sent.", sendErrorMessage = null)
                 }
-                SendMessageResult.EmptyMessage -> {
-                    updateState { copy(sendErrorMessage = "Message cannot be empty.") }
+                SendMessageResult.EmptyMessage -> update {
+                    copy(sendErrorMessage = "Message cannot be empty.")
                 }
-                SendMessageResult.Anonymous -> {
-                    updateState { copy(sendErrorMessage = "Sign in to send chat messages.") }
+                SendMessageResult.Anonymous -> update {
+                    copy(sendErrorMessage = "Sign in to send chat messages.")
                 }
-                SendMessageResult.Disconnected -> {
-                    updateState { copy(sendErrorMessage = "Chat socket is disconnected.") }
+                SendMessageResult.Disconnected -> update {
+                    copy(sendErrorMessage = "Chat socket is disconnected.")
                 }
-                is SendMessageResult.Failed -> {
-                    updateState { copy(sendErrorMessage = result.message) }
+                is SendMessageResult.Failed -> update {
+                    copy(sendErrorMessage = result.message)
                 }
             }
         }
     }
 
-    private suspend fun refreshAuthSession(successMessage: String? = null) {
-        updateState { copy(isAuthLoading = true, authErrorMessage = null) }
-        val token = authRepository.getAccessToken()
-        val login = authRepository.getLogin()
-        val userId = authRepository.getUserId()
-        updateState {
-            copy(
-                isAuthLoading = false,
-                isLoggedIn = token != null,
-                login = login,
-                userId = userId,
-                isAwaitingAuthorization = false,
-                authDeviceFlow = null,
-                authSuccessMessage = successMessage
-            )
-        }
+    fun consumeSendMessages() {
+        update { copy(sendStatusMessage = null, sendErrorMessage = null) }
     }
 
-    private inline fun updateState(transform: ChatUiState.() -> ChatUiState) {
+    private inline fun update(transform: ChatUiState.() -> ChatUiState) {
         _uiState.value = _uiState.value.transform()
     }
 
-    private fun selectRoomState(
-        states: Map<String, RoomState>,
-        channelLogin: String?,
-        hydration: ChannelHydrationState?
-    ): RoomState? {
-        if (channelLogin == null) return null
-        return hydration?.channelId?.let(states::get) ?: states[channelLogin]
-    }
-
-    private fun selectUserState(
-        states: Map<String, UserChatState>,
-        channelLogin: String?,
-        hydration: ChannelHydrationState?
-    ): UserChatState? {
-        if (channelLogin == null) return null
-        return hydration?.channelId?.let(states::get) ?: states[channelLogin]
-    }
+    // IrcMessageMapper uses the room-id tag when present, falling back to
+    // the login. Match either form so freshly joined channels (id not yet
+    // known) and post-hydration frames both flow into the buffer.
+    private fun ChatMessage.belongsTo(activeLogin: String, activeId: String?): Boolean =
+        channelId == activeLogin || (activeId != null && channelId == activeId)
 
     companion object {
-        private const val MAX_RECENT_MESSAGES = 100
+        private const val MAX_RECENT_MESSAGES = 200
     }
 }
 
 data class ChatUiState(
-    val isAuthLoading: Boolean = false,
-    val isLoggedIn: Boolean = false,
-    val isAwaitingAuthorization: Boolean = false,
-    val login: String? = null,
-    val userId: String? = null,
-    val authDeviceFlow: TwitchDeviceFlowState? = null,
-    val authErrorMessage: String? = null,
-    val authSuccessMessage: String? = null,
     val activeChannelLogin: String? = null,
-    val channelHydration: ChannelHydrationState? = null,
-    val roomState: RoomState? = null,
-    val currentUserState: UserChatState? = null,
+    val activeChannelId: String? = null,
+    val isLoadingHistory: Boolean = false,
     val recentMessages: List<ChatMessage> = emptyList(),
     val sendStatusMessage: String? = null,
-    val sendErrorMessage: String? = null,
-    val chatErrorMessage: String? = null
+    val sendErrorMessage: String? = null
 )
 
 fun ReplyMetadata.describeParent(): String =

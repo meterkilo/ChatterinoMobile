@@ -1,9 +1,15 @@
 package com.example.chatterinomobile.di
 
+import com.example.chatterinomobile.ui.auth.AuthViewModel
+import com.example.chatterinomobile.ui.channels.ChannelTabsViewModel
 import com.example.chatterinomobile.ui.chat.ChatViewModel
+import com.example.chatterinomobile.ui.settings.SettingsViewModel
 import org.koin.androidx.viewmodel.dsl.viewModel
 import org.koin.dsl.module
 
 val viewModelModule = module {
-    viewModel { ChatViewModel(get(), get()) }
+    viewModel { AuthViewModel(get()) }
+    viewModel { ChannelTabsViewModel(get()) }
+    viewModel { ChatViewModel(get()) }
+    viewModel { SettingsViewModel(get()) }
 }

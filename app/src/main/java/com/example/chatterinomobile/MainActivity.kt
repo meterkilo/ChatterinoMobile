@@ -1,7 +1,5 @@
 package com.example.chatterinomobile
 
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -28,49 +25,86 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.example.chatterinomobile.data.model.ChannelHydrationState
 import com.example.chatterinomobile.data.model.ChatMessage
 import com.example.chatterinomobile.data.model.MessageFragment
 import com.example.chatterinomobile.data.model.MessageType
-import com.example.chatterinomobile.data.model.TwitchDeviceFlowState
 import com.example.chatterinomobile.data.model.UserChatState
+import com.example.chatterinomobile.data.repository.AuthRepository
+import com.example.chatterinomobile.ui.auth.AuthUiState
+import com.example.chatterinomobile.ui.auth.AuthViewModel
+import com.example.chatterinomobile.ui.auth.TwitchLoginWebView
+import com.example.chatterinomobile.ui.channels.ActiveChannelState
+import com.example.chatterinomobile.ui.channels.ChannelTabsViewModel
 import com.example.chatterinomobile.ui.chat.ChatUiState
 import com.example.chatterinomobile.ui.chat.ChatViewModel
 import com.example.chatterinomobile.ui.chat.describeParent
+import com.example.chatterinomobile.ui.settings.SettingsUiState
+import com.example.chatterinomobile.ui.settings.SettingsViewModel
 import com.example.chatterinomobile.ui.theme.ChatterinoMobileTheme
 import org.koin.androidx.viewmodel.ext.android.viewModel
 
 class MainActivity : ComponentActivity() {
+    private val authViewModel: AuthViewModel by viewModel()
+    private val tabsViewModel: ChannelTabsViewModel by viewModel()
     private val chatViewModel: ChatViewModel by viewModel()
+    private val settingsViewModel: SettingsViewModel by viewModel()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         setContent {
-            val uiState by chatViewModel.uiState.collectAsState()
+            val authState by authViewModel.uiState.collectAsState()
+            val activeChannel by tabsViewModel.activeChannel.collectAsState()
+            val tabsError by tabsViewModel.errorMessage.collectAsState()
+            val chatState by chatViewModel.uiState.collectAsState()
+            val settingsState by settingsViewModel.uiState.collectAsState()
+
+            // Single seam between the tabs VM and the chat VM. ChannelTabs
+            // owns selection; Chat reacts to it. Keeping this in the screen
+            // (rather than coupling the two VMs) keeps both unit-testable
+            // in isolation.
+            LaunchedEffect(activeChannel.channelLogin, activeChannel.hydration?.channelId) {
+                chatViewModel.setActiveChannel(
+                    channelLogin = activeChannel.channelLogin,
+                    channelId = activeChannel.hydration?.channelId
+                )
+            }
 
             ChatterinoMobileTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    ChatScreen(
-                        state = uiState,
-                        onStartLogin = chatViewModel::startLogin,
-                        onLogout = chatViewModel::logout,
-                        onJoinChannel = chatViewModel::joinChannel,
-                        onSendMessage = chatViewModel::sendMessage,
-                        modifier = Modifier.padding(innerPadding)
+                val authorizeUrl = authState.authorizeUrl
+                if (authorizeUrl != null) {
+                    TwitchLoginWebView(
+                        url = authorizeUrl,
+                        redirectUri = AuthRepository.REDIRECT_URI,
+                        onRedirect = authViewModel::onRedirectIntercepted,
+                        onCancel = authViewModel::cancelLogin
                     )
+                } else {
+                    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                        DevScreen(
+                            authState = authState,
+                            activeChannel = activeChannel,
+                            tabsError = tabsError,
+                            chatState = chatState,
+                            settingsState = settingsState,
+                            onStartLogin = authViewModel::startLogin,
+                            onLogout = authViewModel::logout,
+                            onJoinChannel = tabsViewModel::joinChannel,
+                            onSendMessage = chatViewModel::sendMessage,
+                            onClearCache = settingsViewModel::clearCache,
+                            modifier = Modifier.padding(innerPadding)
+                        )
+                    }
                 }
             }
         }
@@ -78,15 +112,20 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ChatScreen(
-    state: ChatUiState,
+private fun DevScreen(
+    authState: AuthUiState,
+    activeChannel: ActiveChannelState,
+    tabsError: String?,
+    chatState: ChatUiState,
+    settingsState: SettingsUiState,
     onStartLogin: () -> Unit,
     onLogout: () -> Unit,
     onJoinChannel: (String) -> Unit,
     onSendMessage: (String) -> Unit,
+    onClearCache: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var channelInput by rememberSaveable { mutableStateOf(state.activeChannelLogin ?: "") }
+    var channelInput by rememberSaveable { mutableStateOf(activeChannel.channelLogin ?: "") }
     var messageInput by rememberSaveable { mutableStateOf("") }
 
     Column(
@@ -103,7 +142,7 @@ private fun ChatScreen(
         )
 
         AuthCard(
-            state = state,
+            state = authState,
             onStartLogin = onStartLogin,
             onLogout = onLogout
         )
@@ -126,12 +165,12 @@ private fun ChatScreen(
                 Text("Join Channel")
             }
 
-            if (state.activeChannelLogin != null) {
+            activeChannel.channelLogin?.let {
                 Spacer(modifier = Modifier.height(12.dp))
-                Text("Active channel: ${state.activeChannelLogin}")
+                Text("Active channel: $it")
             }
 
-            state.channelHydration?.let { hydration ->
+            activeChannel.hydration?.let { hydration ->
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = buildString {
@@ -151,7 +190,7 @@ private fun ChatScreen(
                 }
             }
 
-            state.roomState?.let { roomState ->
+            activeChannel.roomState?.let { roomState ->
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     "Room modes: slow=${roomState.slowModeSeconds}s, " +
@@ -161,12 +200,9 @@ private fun ChatScreen(
                 )
             }
 
-            state.currentUserState?.let { userState ->
-                Spacer(modifier = Modifier.height(8.dp))
-                UserStateSummary(userState)
-            }
+            activeChannel.userState?.let { UserStateSummary(it) }
 
-            state.chatErrorMessage?.let {
+            tabsError?.let {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(it, color = MaterialTheme.colorScheme.error)
             }
@@ -192,28 +228,51 @@ private fun ChatScreen(
                 Text("Send Message")
             }
 
-            state.sendStatusMessage?.let {
+            chatState.sendStatusMessage?.let {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(it, color = MaterialTheme.colorScheme.primary)
             }
 
-            state.sendErrorMessage?.let {
+            chatState.sendErrorMessage?.let {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(it, color = MaterialTheme.colorScheme.error)
             }
         }
 
         CardBlock(title = "Messages") {
-            if (state.recentMessages.isEmpty()) {
-                Text(
+            when {
+                chatState.isLoadingHistory -> Text(
+                    text = "Loading scrollback…",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                chatState.recentMessages.isEmpty() -> Text(
                     text = "No messages yet. Join a channel and wait for chat.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            } else {
-                state.recentMessages.takeLast(30).forEach { message ->
+                else -> chatState.recentMessages.takeLast(30).forEach { message ->
                     MessageRow(message)
                     Spacer(modifier = Modifier.height(8.dp))
                 }
+            }
+        }
+
+        CardBlock(title = "Settings") {
+            Button(
+                onClick = onClearCache,
+                enabled = !settingsState.isClearingCache,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (settingsState.isClearingCache) "Clearing…" else "Clear cache")
+            }
+
+            settingsState.statusMessage?.let {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.primary)
+            }
+
+            settingsState.errorMessage?.let {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -221,46 +280,32 @@ private fun ChatScreen(
 
 @Composable
 private fun AuthCard(
-    state: ChatUiState,
+    state: AuthUiState,
     onStartLogin: () -> Unit,
     onLogout: () -> Unit
 ) {
-    val context = LocalContext.current
-
     CardBlock(title = "Auth") {
         val status = when {
-            state.isAuthLoading -> "Checking session..."
-            state.isAwaitingAuthorization -> "Waiting for Twitch authorization..."
+            state.isLoading -> "Checking session..."
+            state.isAwaitingAuthorization -> "Opening Twitch login..."
             state.isLoggedIn -> "Signed in as ${state.login ?: state.userId ?: "unknown"}"
             else -> "Not signed in"
         }
         Text(status)
 
-        if (state.isAuthLoading || state.isAwaitingAuthorization) {
+        if (state.isLoading || state.isAwaitingAuthorization) {
             Spacer(modifier = Modifier.height(8.dp))
             CircularProgressIndicator()
         }
 
-        state.authSuccessMessage?.let {
+        state.successMessage?.let {
             Spacer(modifier = Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.primary)
         }
 
-        state.authErrorMessage?.let {
+        state.errorMessage?.let {
             Spacer(modifier = Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error)
-        }
-
-        state.authDeviceFlow?.let { deviceFlow ->
-            Spacer(modifier = Modifier.height(12.dp))
-            DeviceCodeCard(
-                state = deviceFlow,
-                onOpenActivation = {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse(deviceFlow.verificationUri))
-                    )
-                }
-            )
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -272,40 +317,10 @@ private fun AuthCard(
         } else {
             Button(
                 onClick = onStartLogin,
-                enabled = !state.isAuthLoading && !state.isAwaitingAuthorization,
+                enabled = !state.isLoading && !state.isAwaitingAuthorization,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Sign In With Twitch")
-            }
-        }
-    }
-}
-
-@Composable
-private fun DeviceCodeCard(
-    state: TwitchDeviceFlowState,
-    onOpenActivation: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "Code: ${state.userCode}",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-            SelectionContainer {
-                Text("Activate at: ${state.verificationUri}")
-            }
-            OutlinedButton(onClick = onOpenActivation) {
-                Text("Open Activation Page")
             }
         }
     }
@@ -338,6 +353,7 @@ private fun CardBlock(
 
 @Composable
 private fun UserStateSummary(userState: UserChatState) {
+    Spacer(modifier = Modifier.height(8.dp))
     Text(
         "You in chat: ${userState.displayName ?: userState.login ?: userState.userId ?: "unknown"}"
     )
@@ -350,7 +366,7 @@ private fun UserStateSummary(userState: UserChatState) {
 
 @Composable
 private fun MessageRow(message: ChatMessage) {
-    val body = remember(message) { renderFragments(message.fragment) }
+    val body = renderFragments(message.fragment)
     val systemText = (message.Type as? MessageType.System)?.text
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -391,39 +407,3 @@ private fun renderFragments(fragments: List<MessageFragment>): String =
             }
         }
     }
-
-@Preview(showBackground = true)
-@Composable
-private fun ChatScreenPreview() {
-    ChatterinoMobileTheme {
-        ChatScreen(
-            state = ChatUiState(
-                isLoggedIn = true,
-                login = "franz",
-                activeChannelLogin = "xqc",
-                channelHydration = ChannelHydrationState(
-                    channelLogin = "xqc",
-                    channelId = "71092938",
-                    isReady = true
-                ),
-                recentMessages = listOf(
-                    ChatMessage(
-                        id = "1",
-                        channelId = "71092938",
-                        author = com.example.chatterinomobile.data.model.ChatUser(
-                            id = "1",
-                            login = "viewer",
-                            displayName = "viewer"
-                        ),
-                        fragment = listOf(MessageFragment.Text("hello chat")),
-                        timestamp = 0L
-                    )
-                )
-            ),
-            onStartLogin = {},
-            onLogout = {},
-            onJoinChannel = {},
-            onSendMessage = {}
-        )
-    }
-}

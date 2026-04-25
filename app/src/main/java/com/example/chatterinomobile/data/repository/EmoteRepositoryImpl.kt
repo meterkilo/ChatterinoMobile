@@ -1,82 +1,103 @@
 package com.example.chatterinomobile.data.repository
 
+import com.example.chatterinomobile.data.local.EmoteDimensionStore
+import com.example.chatterinomobile.data.local.EmoteDiskCache
 import com.example.chatterinomobile.data.model.Emote
 import com.example.chatterinomobile.data.remote.api.BttvApi
 import com.example.chatterinomobile.data.remote.api.FfzApi
 import com.example.chatterinomobile.data.remote.api.SevenTvApi
 import com.example.chatterinomobile.data.remote.mapper.toDomain
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
  * Loads emotes from 7TV, BTTV, and FFZ and keeps them in in-memory lookup
- * tables keyed by emote name. A single [Mutex] guards writes so concurrent
- * channel switches don't race.
+ * tables keyed by emote name.
  *
- * There are two caches:
- * - [globalEmotesByName] for provider-wide sets loaded once on startup/join
- * - [channelEmotesByChannelId] for broadcaster-specific sets keyed by Twitch ID
+ * Caching layers, outside-in:
  *
- * Reads stay lock-free because the hot path is every inbound message. We
- * tolerate the tiny race where one message arrives while a channel cache is
- * swapping in; worst case, that frame misses a just-loaded emote once.
+ * 1. Hot path: lock-free `HashMap` read in [findEmote]. Every inbound
+ *    message hits this, so taking a mutex here would be catastrophic.
+ * 2. Disk: [EmoteDiskCache] holds the last successful fetch for global +
+ *    each channel. Cold start serves disk immediately (stale-while-revalidate)
+ *    so the user sees third-party emotes on the very first message instead
+ *    of waiting on four provider HTTP round-trips.
+ * 3. Dimensions: [EmoteDimensionStore] learns real `(w, h)` values for
+ *    BTTV / FFZ (which don't return them in API responses) on first decode
+ *    and persists them. This makes aspect-ratio pre-allocation survive app
+ *    restart, which is Twick's "no layout jump" trick.
+ *
+ * TTL strategy is stale-while-revalidate rather than blocking: if the
+ * on-disk snapshot is past TTL we still serve it *now* and fire a network
+ * refresh in the background. Users re-entering a channel at 31min don't wait
+ * 500ms for fresh data; the next message benefits.
+ *
+ * Idle eviction: every channel map is timestamped on each read. A ticker
+ * drops any channel idle past [CHANNEL_IDLE_EVICT_MILLIS] so a session that
+ * bounces across 20 streams doesn't accumulate unbounded memory. The global
+ * map never evicts — it's small (~500-2000 entries) and always relevant.
  */
 class EmoteRepositoryImpl(
     private val sevenTvApi: SevenTvApi,
     private val bttvApi: BttvApi,
-    private val ffzApi: FfzApi
+    private val ffzApi: FfzApi,
+    private val diskCache: EmoteDiskCache,
+    private val dimensionStore: EmoteDimensionStore,
+    scopeOverride: CoroutineScope? = null
 ) : EmoteRepository {
+
+    private val scope = scopeOverride ?: CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val globalEmotesByName = HashMap<String, Emote>()
     private val channelEmotesByChannelId = HashMap<String, HashMap<String, Emote>>()
     private var globalLoadedAtMillis = 0L
     private val channelLoadedAtMillis = HashMap<String, Long>()
+    private val channelLastAccessedAtMillis = HashMap<String, Long>()
     private val inFlightLoads = HashMap<String, Deferred<Map<String, Emote>>>()
     private val mutex = Mutex()
 
+    init {
+        // Dimension store must be available before the renderer ever calls
+        // findEmote; loading is cheap (one JSON file, a few KB).
+        scope.launch { dimensionStore.ensureLoaded() }
+        scope.launch { idleEvictionLoop() }
+    }
+
     override suspend fun loadEmotesForChannel(channelId: String?) {
-        withContext(Dispatchers.IO) {
-            coroutineScope {
-                if (channelId == null) {
-                    if (isGlobalFresh()) return@coroutineScope
-                    val globalLoaded = loadGlobalEmotes()
-                    mutex.withLock {
-                        globalEmotesByName.clear()
-                        globalEmotesByName.putAll(globalLoaded)
-                        globalLoadedAtMillis = System.currentTimeMillis()
-                    }
-                    return@coroutineScope
-                }
-
-                if (isChannelFresh(channelId)) return@coroutineScope
-
-                val channelLoaded = mutex.withLock {
-                    inFlightLoads[channelId]
-                        ?: async {
-                            runCatching { fetchChannelEmotes(channelId) }
-                                .getOrElse { emptyMap() }
-                        }.also { inFlightLoads[channelId] = it }
-                }.await()
-
-                mutex.withLock {
-                    channelEmotesByChannelId[channelId] = HashMap(channelLoaded)
-                    channelLoadedAtMillis[channelId] = System.currentTimeMillis()
-                    inFlightLoads.remove(channelId)
-                }
-            }
+        if (channelId == null) {
+            loadGlobalWithDiskFallback()
+        } else {
+            loadChannelWithDiskFallback(channelId)
         }
     }
 
     override fun findEmote(name: String, channelId: String?): Emote? {
         if (channelId != null) {
-            channelEmotesByChannelId[channelId]?.get(name)?.let { return it }
+            channelEmotesByChannelId[channelId]?.get(name)?.let {
+                channelLastAccessedAtMillis[channelId] = System.currentTimeMillis()
+                return decorate(it)
+            }
         }
-        return globalEmotesByName[name]
+        return globalEmotesByName[name]?.let(::decorate)
+    }
+
+    override fun recordDimensions(emoteId: String, channelId: String?, width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        val prior = dimensionStore.get(emoteId)
+        if (prior != null && prior.width == width && prior.height == height) return
+        dimensionStore.record(emoteId, width, height)
+        // Patch the on-disk snapshot so a cold start picks up the upgraded
+        // ratio without having to re-learn it during the very first frame.
+        scope.launch { patchDiskAspectRatio(emoteId, channelId, width, height) }
     }
 
     override fun clearCache(channelId: String?) {
@@ -84,12 +105,167 @@ class EmoteRepositoryImpl(
             globalEmotesByName.clear()
             channelEmotesByChannelId.clear()
             channelLoadedAtMillis.clear()
+            channelLastAccessedAtMillis.clear()
             globalLoadedAtMillis = 0L
             return
         }
 
         channelEmotesByChannelId.remove(channelId)
         channelLoadedAtMillis.remove(channelId)
+        channelLastAccessedAtMillis.remove(channelId)
+    }
+
+    /**
+     * Overlay any learned dimensions from the dimension store on top of the
+     * stored [Emote]. This keeps the on-disk metadata canonical (provider
+     * URLs etc.) and the learned dimensions hot-swappable without a rewrite.
+     */
+    private fun decorate(emote: Emote): Emote {
+        if (emote.aspectRatio != null) return emote
+        val learned = dimensionStore.get(emote.id) ?: return emote
+        return emote.copy(aspectRatio = learned.aspectRatio)
+    }
+
+    private suspend fun loadGlobalWithDiskFallback() {
+        val snapshot = diskCache.readGlobal()
+        if (snapshot != null && globalLoadedAtMillis == 0L) {
+            mutex.withLock {
+                if (globalLoadedAtMillis == 0L) {
+                    globalEmotesByName.clear()
+                    globalEmotesByName.putAll(snapshot.emotes)
+                    globalLoadedAtMillis = snapshot.savedAtEpochMillis
+                }
+            }
+        }
+
+        val needsRefresh = snapshot == null ||
+            System.currentTimeMillis() - snapshot.savedAtEpochMillis >= GLOBAL_CACHE_TTL_MILLIS
+
+        if (!needsRefresh) return
+
+        // Kick off the refresh but don't block on it when we already served disk.
+        val refresh = scope.launch { refreshGlobalFromNetwork() }
+        if (snapshot == null) refresh.join()
+    }
+
+    private suspend fun refreshGlobalFromNetwork() = withContext(Dispatchers.IO) {
+        val loaded = loadGlobalEmotes()
+        if (loaded.isEmpty()) return@withContext
+        mutex.withLock {
+            globalEmotesByName.clear()
+            globalEmotesByName.putAll(loaded)
+            globalLoadedAtMillis = System.currentTimeMillis()
+        }
+        diskCache.writeGlobal(loaded)
+    }
+
+    private suspend fun loadChannelWithDiskFallback(channelId: String) {
+        channelLastAccessedAtMillis[channelId] = System.currentTimeMillis()
+
+        val snapshot = diskCache.readChannel(channelId)
+        if (snapshot != null && !channelEmotesByChannelId.containsKey(channelId)) {
+            mutex.withLock {
+                if (!channelEmotesByChannelId.containsKey(channelId)) {
+                    channelEmotesByChannelId[channelId] = HashMap(snapshot.emotes)
+                    channelLoadedAtMillis[channelId] = snapshot.savedAtEpochMillis
+                }
+            }
+        }
+
+        val needsRefresh = snapshot == null ||
+            System.currentTimeMillis() - snapshot.savedAtEpochMillis >= CHANNEL_CACHE_TTL_MILLIS
+
+        if (!needsRefresh) return
+
+        // Dedup concurrent joins of the same channel — they share one
+        // network request rather than hammering the providers three times.
+        val refresh: Deferred<Map<String, Emote>> = mutex.withLock {
+            inFlightLoads[channelId] ?: scope.async {
+                runCatching { fetchChannelEmotes(channelId) }.getOrElse { emptyMap() }
+            }.also { inFlightLoads[channelId] = it }
+        }
+
+        val refreshJob = scope.launch {
+            val loaded = try {
+                refresh.await()
+            } finally {
+                mutex.withLock { inFlightLoads.remove(channelId) }
+            }
+            if (loaded.isNotEmpty()) {
+                mutex.withLock {
+                    channelEmotesByChannelId[channelId] = HashMap(loaded)
+                    channelLoadedAtMillis[channelId] = System.currentTimeMillis()
+                }
+                diskCache.writeChannel(channelId, loaded)
+            }
+        }
+
+        if (snapshot == null) refreshJob.join()
+    }
+
+    private suspend fun patchDiskAspectRatio(
+        emoteId: String,
+        channelId: String?,
+        width: Int,
+        height: Int
+    ) {
+        val ratio = width.toFloat() / height.toFloat()
+        // Walk the in-memory tables looking for the matching emote so we
+        // patch the right scope on disk. Channel-scoped emotes live in
+        // exactly one channel's file at a time.
+        val (owningChannelId, emote) = locateEmote(emoteId, channelId) ?: return
+        if (emote.aspectRatio == ratio) return
+        val updated = emote.copy(aspectRatio = ratio)
+        // Reflect into the in-memory map too so the next findEmote() call
+        // doesn't re-pay the dimension-store lookup.
+        mutex.withLock {
+            if (owningChannelId == null) {
+                globalEmotesByName[emote.name] = updated
+            } else {
+                channelEmotesByChannelId[owningChannelId]?.put(emote.name, updated)
+            }
+        }
+        diskCache.patchEmote(owningChannelId, updated)
+    }
+
+    private fun locateEmote(emoteId: String, hintedChannelId: String?): Pair<String?, Emote>? {
+        if (hintedChannelId != null) {
+            channelEmotesByChannelId[hintedChannelId]?.values
+                ?.firstOrNull { it.id == emoteId }
+                ?.let { return hintedChannelId to it }
+        }
+        globalEmotesByName.values.firstOrNull { it.id == emoteId }
+            ?.let { return null to it }
+        for ((cid, map) in channelEmotesByChannelId) {
+            map.values.firstOrNull { it.id == emoteId }?.let { return cid to it }
+        }
+        return null
+    }
+
+    /**
+     * Background coroutine that evicts idle channel maps. Running this as a
+     * long-lived loop instead of on-write lets us evict even when the user
+     * is idle in a single channel (no writes = no event to trigger cleanup).
+     */
+    private suspend fun idleEvictionLoop() {
+        while (true) {
+            delay(IDLE_EVICTION_TICK_MILLIS)
+            val cutoff = System.currentTimeMillis() - CHANNEL_IDLE_EVICT_MILLIS
+            val victims = mutex.withLock {
+                channelLastAccessedAtMillis
+                    .filterValues { it < cutoff }
+                    .keys
+                    .toList()
+            }
+            if (victims.isEmpty()) continue
+            mutex.withLock {
+                for (channelId in victims) {
+                    channelEmotesByChannelId.remove(channelId)
+                    channelLoadedAtMillis.remove(channelId)
+                    channelLastAccessedAtMillis.remove(channelId)
+                }
+            }
+        }
     }
 
     /**
@@ -151,17 +327,10 @@ class EmoteRepositoryImpl(
         )
     }
 
-    private fun isGlobalFresh(): Boolean =
-        globalLoadedAtMillis != 0L &&
-            System.currentTimeMillis() - globalLoadedAtMillis < GLOBAL_CACHE_TTL_MILLIS
-
-    private fun isChannelFresh(channelId: String): Boolean {
-        val loadedAt = channelLoadedAtMillis[channelId] ?: return false
-        return System.currentTimeMillis() - loadedAt < CHANNEL_CACHE_TTL_MILLIS
-    }
-
     companion object {
         private const val GLOBAL_CACHE_TTL_MILLIS = 6L * 60L * 60L * 1000L
         private const val CHANNEL_CACHE_TTL_MILLIS = 30L * 60L * 1000L
+        private const val CHANNEL_IDLE_EVICT_MILLIS = 15L * 60L * 1000L
+        private const val IDLE_EVICTION_TICK_MILLIS = 60L * 1000L
     }
 }

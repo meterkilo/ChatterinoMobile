@@ -1,25 +1,21 @@
 package com.example.chatterinomobile.data.repository
 
+import android.net.Uri
 import com.example.chatterinomobile.BuildConfig
 import com.example.chatterinomobile.data.local.TokenStore
-import com.example.chatterinomobile.data.model.TwitchDeviceAuthorization
-import com.example.chatterinomobile.data.model.TwitchDeviceFlowState
+import com.example.chatterinomobile.data.model.TwitchImplicitAuthResult
 import com.example.chatterinomobile.data.remote.api.TwitchOAuthApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
  * Real Twitch auth implementation for a public mobile client.
  *
- * Responsibilities:
- * - start + poll the device-code flow
- * - persist access/refresh tokens securely
- * - refresh access tokens when they expire
- * - validate tokens on startup and roughly hourly thereafter, per Twitch's rules
- *
- * A single [sessionMutex] serializes refresh / validate / login completion so
- * multiple callers don't burn one-time-use refresh tokens concurrently.
+ * Uses the OAuth implicit-grant flow: a WebView shows Twitch's normal login
+ * page, and on success Twitch redirects to [AuthRepository.REDIRECT_URI] with
+ * the access token in the URL fragment. The implicit flow doesn't yield a
+ * refresh token, so when the access token expires we fall back to anonymous
+ * mode and require a fresh login.
  */
 class TwitchOAuthRepository(
     private val oauthApi: TwitchOAuthApi,
@@ -33,20 +29,17 @@ class TwitchOAuthRepository(
             val current = tokenStore.read() ?: return null
             val now = System.currentTimeMillis()
 
-            val refreshed = if (current.expiresAtEpochMillis <= now + EXPIRY_SKEW_MILLIS) {
-                refreshLocked(current) ?: return null
-            } else {
-                current
+            if (current.expiresAtEpochMillis <= now + EXPIRY_SKEW_MILLIS) {
+                tokenStore.clear()
+                return null
             }
 
-            val maybeValidated =
-                if (refreshed.lastValidatedAtEpochMillis <= now - VALIDATE_INTERVAL_MILLIS) {
-                    validateLocked(refreshed) ?: return null
-                } else {
-                    refreshed
-                }
-
-            maybeValidated.accessToken
+            if (current.lastValidatedAtEpochMillis <= now - VALIDATE_INTERVAL_MILLIS) {
+                val validated = validateLocked(current) ?: return null
+                validated.accessToken
+            } else {
+                current.accessToken
+            }
         }
 
     override suspend fun getUserId(): String? =
@@ -57,139 +50,75 @@ class TwitchOAuthRepository(
 
     override fun getClientId(): String = BuildConfig.TWITCH_CLIENT_ID
 
-    override suspend fun startDeviceFlow(scopes: List<String>): TwitchDeviceFlowState? {
+    override fun buildAuthorizeUrl(scopes: List<String>): String? {
         val clientId = getClientId().trim()
         if (clientId.isBlank()) return null
 
-        val response = oauthApi.startDeviceFlow(clientId, scopes)
-        val now = System.currentTimeMillis()
-        return TwitchDeviceFlowState(
-            deviceCode = response.deviceCode,
-            userCode = response.userCode,
-            verificationUri = response.verificationUri,
-            scopes = scopes,
-            expiresAtEpochMillis = now + (response.expiresIn * 1000L),
-            pollIntervalSeconds = response.interval
-        )
+        return Uri.parse("$AUTHORIZE_URL").buildUpon()
+            .appendQueryParameter("client_id", clientId)
+            .appendQueryParameter("redirect_uri", AuthRepository.REDIRECT_URI)
+            .appendQueryParameter("response_type", "token")
+            .appendQueryParameter("scope", scopes.joinToString(" "))
+            .appendQueryParameter("force_verify", "true")
+            .build()
+            .toString()
     }
 
-    override suspend fun awaitDeviceAuthorization(
-        state: TwitchDeviceFlowState
-    ): TwitchDeviceAuthorization {
-        val clientId = getClientId().trim()
-        if (clientId.isBlank()) {
-            return TwitchDeviceAuthorization.Failed("Twitch client ID is not configured")
-        }
+    override suspend fun completeImplicitFlow(redirectUrl: String): TwitchImplicitAuthResult {
+        val parsed = parseRedirect(redirectUrl)
+            ?: return TwitchImplicitAuthResult.Failed("Could not read Twitch redirect")
 
-        var intervalSeconds = state.pollIntervalSeconds.coerceAtLeast(1)
-        while (true) {
-            val now = System.currentTimeMillis()
-            if (state.isExpired(now)) return TwitchDeviceAuthorization.Expired
-
-            when (
-                val result = oauthApi.exchangeDeviceCode(
-                    clientId = clientId,
-                    scopes = state.scopes,
-                    deviceCode = state.deviceCode
-                )
-            ) {
-                is TwitchOAuthApi.DeviceCodeExchangeResult.Authorized -> {
-                    val validated = when (
-                        val validation = oauthApi.validateAccessToken(result.token.accessToken)
-                    ) {
-                        is TwitchOAuthApi.ValidateTokenResult.Valid -> validation.token
-                        is TwitchOAuthApi.ValidateTokenResult.Invalid -> {
-                            return TwitchDeviceAuthorization.Failed(
-                                "Twitch returned an invalid access token"
-                            )
-                        }
-                        is TwitchOAuthApi.ValidateTokenResult.Failed -> {
-                            return TwitchDeviceAuthorization.Failed(validation.message)
-                        }
-                    }
-
-                    val stored = TokenStore.StoredTwitchSession(
-                        accessToken = result.token.accessToken,
-                        refreshToken = result.token.refreshToken,
-                        userId = validated.userId,
-                        login = validated.login,
-                        expiresAtEpochMillis = now + (result.token.expiresIn * 1000L),
-                        scopes = if (validated.scopes.isNotEmpty()) {
-                            validated.scopes
-                        } else {
-                            result.token.scope
-                        },
-                        lastValidatedAtEpochMillis = now
-                    )
-
-                    sessionMutex.withLock {
-                        tokenStore.write(stored)
-                    }
-
-                    return TwitchDeviceAuthorization.Authorized(
-                        userId = stored.userId,
-                        login = stored.login,
-                        accessToken = stored.accessToken,
-                        scopes = stored.scopes,
-                        expiresAtEpochMillis = stored.expiresAtEpochMillis
-                    )
-                }
-                TwitchOAuthApi.DeviceCodeExchangeResult.AuthorizationPending -> {
-                    delay(intervalSeconds * 1000L)
-                }
-                TwitchOAuthApi.DeviceCodeExchangeResult.SlowDown -> {
-                    intervalSeconds += 5
-                    delay(intervalSeconds * 1000L)
-                }
-                TwitchOAuthApi.DeviceCodeExchangeResult.ExpiredToken -> {
-                    return TwitchDeviceAuthorization.Expired
-                }
-                TwitchOAuthApi.DeviceCodeExchangeResult.AccessDenied -> {
-                    return TwitchDeviceAuthorization.Denied
-                }
-                is TwitchOAuthApi.DeviceCodeExchangeResult.Failed -> {
-                    return TwitchDeviceAuthorization.Failed(result.message)
-                }
+        parsed.error?.let { error ->
+            return if (error == "access_denied") {
+                TwitchImplicitAuthResult.Denied
+            } else {
+                TwitchImplicitAuthResult.Failed(parsed.errorDescription ?: error)
             }
         }
+
+        val accessToken = parsed.accessToken
+            ?: return TwitchImplicitAuthResult.Failed("No access token in Twitch redirect")
+
+        val now = System.currentTimeMillis()
+        val expiresInSeconds = parsed.expiresInSeconds ?: DEFAULT_TOKEN_LIFETIME_SECONDS
+        val scopesFromUrl = parsed.scopes
+
+        val validated = when (val validation = oauthApi.validateAccessToken(accessToken)) {
+            is TwitchOAuthApi.ValidateTokenResult.Valid -> validation.token
+            TwitchOAuthApi.ValidateTokenResult.Invalid ->
+                return TwitchImplicitAuthResult.Failed("Twitch returned an invalid access token")
+            is TwitchOAuthApi.ValidateTokenResult.Failed ->
+                return TwitchImplicitAuthResult.Failed(validation.message)
+        }
+
+        val resolvedScopes = if (validated.scopes.isNotEmpty()) validated.scopes else scopesFromUrl
+
+        val stored = TokenStore.StoredTwitchSession(
+            accessToken = accessToken,
+            refreshToken = null,
+            userId = validated.userId,
+            login = validated.login,
+            expiresAtEpochMillis = now + (expiresInSeconds * 1000L),
+            scopes = resolvedScopes,
+            lastValidatedAtEpochMillis = now
+        )
+
+        sessionMutex.withLock {
+            tokenStore.write(stored)
+        }
+
+        return TwitchImplicitAuthResult.Authorized(
+            userId = stored.userId,
+            login = stored.login,
+            accessToken = stored.accessToken,
+            scopes = stored.scopes,
+            expiresAtEpochMillis = stored.expiresAtEpochMillis
+        )
     }
 
     override suspend fun clearSession() {
         sessionMutex.withLock {
             tokenStore.clear()
-        }
-    }
-
-    private suspend fun refreshLocked(
-        current: TokenStore.StoredTwitchSession
-    ): TokenStore.StoredTwitchSession? {
-        val refreshToken = current.refreshToken ?: run {
-            tokenStore.clear()
-            return null
-        }
-
-        return when (val result = oauthApi.refreshAccessToken(getClientId(), refreshToken)) {
-            is TwitchOAuthApi.RefreshTokenResult.Success -> {
-                val now = System.currentTimeMillis()
-                val updated = current.copy(
-                    accessToken = result.token.accessToken,
-                    refreshToken = result.token.refreshToken ?: refreshToken,
-                    expiresAtEpochMillis = now + (result.token.expiresIn * 1000L),
-                    scopes = if (result.token.scope.isNotEmpty()) {
-                        result.token.scope
-                    } else {
-                        current.scopes
-                    },
-                    lastValidatedAtEpochMillis = 0L
-                )
-                tokenStore.write(updated)
-                updated
-            }
-            TwitchOAuthApi.RefreshTokenResult.InvalidRefreshToken -> {
-                tokenStore.clear()
-                null
-            }
-            is TwitchOAuthApi.RefreshTokenResult.Failed -> null
         }
     }
 
@@ -220,8 +149,51 @@ class TwitchOAuthRepository(
             is TwitchOAuthApi.ValidateTokenResult.Failed -> current
         }
 
+    private data class ParsedRedirect(
+        val accessToken: String?,
+        val expiresInSeconds: Long?,
+        val scopes: List<String>,
+        val error: String?,
+        val errorDescription: String?
+    )
+
+    private fun parseRedirect(url: String): ParsedRedirect? {
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+
+        // Twitch returns the token in the URL fragment for the implicit flow,
+        // but errors come back on the query string. Read both.
+        val fragmentParams = uri.fragment
+            ?.split("&")
+            .orEmpty()
+            .mapNotNull { pair ->
+                val idx = pair.indexOf('=')
+                if (idx <= 0) null else pair.substring(0, idx) to Uri.decode(pair.substring(idx + 1))
+            }
+            .toMap()
+
+        val accessToken = fragmentParams["access_token"]
+        val expiresIn = fragmentParams["expires_in"]?.toLongOrNull()
+        val scopes = fragmentParams["scope"]?.split(" ")?.filter { it.isNotBlank() }.orEmpty()
+
+        val error = fragmentParams["error"] ?: uri.getQueryParameter("error")
+        val errorDescription = fragmentParams["error_description"]
+            ?: uri.getQueryParameter("error_description")
+
+        if (accessToken == null && error == null) return null
+
+        return ParsedRedirect(
+            accessToken = accessToken,
+            expiresInSeconds = expiresIn,
+            scopes = scopes,
+            error = error,
+            errorDescription = errorDescription
+        )
+    }
+
     companion object {
+        private const val AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
         private const val EXPIRY_SKEW_MILLIS = 60_000L
         private const val VALIDATE_INTERVAL_MILLIS = 60L * 60L * 1000L
+        private const val DEFAULT_TOKEN_LIFETIME_SECONDS = 4L * 60L * 60L
     }
 }

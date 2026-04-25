@@ -1,17 +1,12 @@
 package com.example.chatterinomobile.data.repository
 
-import com.example.chatterinomobile.data.model.TwitchDeviceAuthorization
-import com.example.chatterinomobile.data.model.TwitchDeviceFlowState
+import com.example.chatterinomobile.data.model.TwitchImplicitAuthResult
 
 /**
  * Stub [AuthRepository] that always returns "no user logged in".
  *
  * All downstream callers must tolerate this (the IRC client falls back to a
  * `justinfan*` anonymous login, Helix endpoints that require auth return empty).
- *
- * This still has one real job after OAuth lands: it remains the fallback when
- * no Twitch client ID is configured locally, which keeps CI and fresh clones
- * buildable without private setup.
  */
 class AnonymousAuthRepository(
     private val clientId: String = ""
@@ -25,12 +20,10 @@ class AnonymousAuthRepository(
 
     override fun getClientId(): String = clientId
 
-    override suspend fun startDeviceFlow(scopes: List<String>): TwitchDeviceFlowState? = null
+    override fun buildAuthorizeUrl(scopes: List<String>): String? = null
 
-    override suspend fun awaitDeviceAuthorization(
-        state: TwitchDeviceFlowState
-    ): TwitchDeviceAuthorization =
-        TwitchDeviceAuthorization.Failed("Twitch OAuth is not configured")
+    override suspend fun completeImplicitFlow(redirectUrl: String): TwitchImplicitAuthResult =
+        TwitchImplicitAuthResult.Failed("Twitch OAuth is not configured")
 
     override suspend fun clearSession() = Unit
 }
