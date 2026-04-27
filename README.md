@@ -4,7 +4,7 @@ A mobile Twitch and Kick chat client inspired by **Chatterino** and **Chatterino
 
 ### Tech stack
 * **UI:** Jetpack Compose
-* **Async:** Coroutines + Flow
+* **Data:** Coroutines + Flow + WebSockets
 * **Networking:** Ktor (OkHttp engine)
 * **Serialization:** kotlinx.serialization
 * **DI:** Koin
