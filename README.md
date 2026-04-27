@@ -8,6 +8,6 @@ A mobile Twitch and Kick chat client inspired by **Chatterino** and **Chatterino
 * **Networking:** Ktor (OkHttp engine)
 * **Serialization:** kotlinx.serialization
 * **DI:** Koin
-* **Target:** MVVM architecture. The data/domain layers are pure Kotlin (no Android imports) so I can hopefully share them with an iOS client later.
+
 
 
