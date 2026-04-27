@@ -3,10 +3,6 @@ package com.example.chatterinomobile.data.remote.dto
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Root response for FFZ global emotes endpoint.
- * FFZ returns { "default_sets": [...], "sets": { "3": {...}, "4": {...} } }
- */
 @Serializable
 data class FfzGlobalResponseDto(
     @SerialName("default_sets") val defaultSets: List<Int>,
@@ -34,6 +30,6 @@ data class FfzRoomDto(
 data class FfzEmoteDto(
     val id: Int,
     val name: String,
-    val animated: Map<String, String>? = null,  // null for static emotes
-    val urls: Map<String, String>                // keys: "1", "2", "4"
+    val animated: Map<String, String>? = null,
+    val urls: Map<String, String>
 )

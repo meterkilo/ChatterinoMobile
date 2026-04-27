@@ -17,24 +17,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/**
- * In-memory badge cache backed by [BadgeDiskCache] for instant cold-start
- * restores.
- *
- * Reads go through unsynchronized `HashMap`s because badges are looked up
- * from the render loop on every message — taking a mutex there would be
- * disastrous. Writes are serialized by [writeMutex] so concurrent channel
- * switches don't trample each other.
- *
- * The slight read-side race (a channel badge appearing mid-write) is fine:
- * the worst case is one frame with an older badge image.
- *
- * Same stale-while-revalidate strategy as [EmoteRepositoryImpl]: we serve the
- * last successful disk snapshot immediately and refresh in the background
- * when it's past TTL. Channel-scoped badges (custom sub/bit badges) expire
- * out of memory after [CHANNEL_IDLE_EVICT_MILLIS] of no lookups so session
- * memory stays bounded.
- */
 class BadgeRepositoryImpl(
     private val helixApi: TwitchHelixApi,
     private val sevenTvCosmeticsApi: SevenTvCosmeticsApi,
@@ -44,13 +26,10 @@ class BadgeRepositoryImpl(
 
     private val bgScope = scopeOverride ?: CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // key = "$setId/$version"
     private val globalTwitchBadges = HashMap<String, Badge>()
 
-    // channelId -> (key -> Badge)
     private val channelTwitchBadges = HashMap<String, HashMap<String, Badge>>()
 
-    // twitchUserId -> list of SEVENTV badges
     private val sevenTvBadgesByUser = HashMap<String, MutableList<Badge>>()
 
     private var globalLoadedAtMillis = 0L

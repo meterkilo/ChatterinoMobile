@@ -8,11 +8,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
-/**
- * Resolves [Channel]s by issuing parallel `/users` and `/streams` Helix calls
- * and joining the results on `user_id`. Errors (most commonly 401 from the
- * stub auth layer) collapse to empty lists so the UI keeps working offline.
- */
 class ChannelRepositoryImpl(
     private val helixApi: TwitchHelixApi
 ) : ChannelRepository {

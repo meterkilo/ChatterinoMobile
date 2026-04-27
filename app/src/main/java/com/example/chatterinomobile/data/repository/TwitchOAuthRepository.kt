@@ -8,15 +8,6 @@ import com.example.chatterinomobile.data.remote.api.TwitchOAuthApi
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/**
- * Real Twitch auth implementation for a public mobile client.
- *
- * Uses the OAuth implicit-grant flow: a WebView shows Twitch's normal login
- * page, and on success Twitch redirects to [AuthRepository.REDIRECT_URI] with
- * the access token in the URL fragment. The implicit flow doesn't yield a
- * refresh token, so when the access token expires we fall back to anonymous
- * mode and require a fresh login.
- */
 class TwitchOAuthRepository(
     private val oauthApi: TwitchOAuthApi,
     private val tokenStore: TokenStore
@@ -160,8 +151,6 @@ class TwitchOAuthRepository(
     private fun parseRedirect(url: String): ParsedRedirect? {
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
 
-        // Twitch returns the token in the URL fragment for the implicit flow,
-        // but errors come back on the query string. Read both.
         val fragmentParams = uri.fragment
             ?.split("&")
             .orEmpty()

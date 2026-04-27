@@ -33,20 +33,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/**
- * Default [ChatRepository]: demultiplexes the single IRC frame stream into
- * two typed flows.
- *
- *  - [messages]: PRIVMSG / USERNOTICE / NOTICE → [ChatMessage], then run
- *    through [MessageEnricher] to attach paints and third-party emote
- *    fragments.
- *  - [moderationEvents]: CLEARCHAT / CLEARMSG → [ModerationEvent] for the
- *    UI to apply as retroactive strikes / deletions.
- *
- * Everything else (JOIN, PART, PING, ROOMSTATE, USERSTATE, ...) is dropped
- * for now. Reconnection and rate-limiting will layer on top of this repo;
- * they don't belong inside [TwitchIrcClient].
- */
 class ChatRepositoryImpl(
     private val ircClient: TwitchIrcClient,
     private val mapper: IrcMessageMapper,
@@ -121,17 +107,6 @@ class ChatRepositoryImpl(
         }
     }
 
-    /**
-     * The enriched message stream is shared (`shareIn`) so we don't re-run
-     * the mapper + enricher once per UI collector. Crucially, the side-effect
-     * `onEach { historyStore.enqueue(...) }` runs in the upstream — *before*
-     * sharing — which means persistence happens exactly once per message
-     * regardless of how many ViewModels are observing.
-     *
-     * Replay 0 because cold-start scrollback is served explicitly via
-     * [recentHistory]; we don't want late subscribers to re-receive a
-     * snapshot of in-flight live messages and double-render.
-     */
     override val messages: Flow<ChatMessage> =
         ircClient.incoming
             .mapNotNull { raw -> mapper.map(raw) }
@@ -147,20 +122,11 @@ class ChatRepositoryImpl(
 
     override suspend fun recentHistory(channelLogin: String, limit: Int): List<ChatMessage> {
         val normalizedLogin = channelLogin.lowercase().removePrefix("#")
-        // History is keyed by Twitch channel ID, not login, because logins
-        // are mutable. If the user is loading scrollback for a channel they
-        // haven't joined yet in this process we need to resolve the login
-        // first; the cache hit case skips the network call.
+
         val channel = resolveChannel(normalizedLogin) ?: return emptyList()
         return historyStore.recent(channel.id, limit)
     }
 
-    /**
-     * Mirror moderation events into the persisted log so scrollback after a
-     * rejoin honors the same redactions the user already saw live. We
-     * deliberately resolve the channel lazily (and only for non-trivial
-     * variants) to avoid a Helix call for every delete event.
-     */
     private fun mirrorModerationToHistory(event: ModerationEvent) {
         scope.launch {
             runCatching {
@@ -237,10 +203,6 @@ class ChatRepositoryImpl(
         ircClient.disconnect()
     }
 
-    /**
-     * Global badges/emotes are shared across every channel, so they should be
-     * loaded once before the first join rather than re-fetching them per tab.
-     */
     private suspend fun ensureGlobalCachesLoaded() {
         if (globalsLoaded) return
         globalWarmupMutex.withLock {
@@ -291,11 +253,6 @@ class ChatRepositoryImpl(
         }
     }
 
-    /**
-     * Joining IRC should be low-latency. We therefore resolve Helix identity
-     * and load third-party caches in the background after the JOIN frame has
-     * already been sent instead of blocking chat startup on multiple APIs.
-     */
     private fun hydrateChannelCachesAsync(channelLogin: String) {
         scope.launch {
             runCatching {
@@ -348,11 +305,6 @@ class ChatRepositoryImpl(
         return channel
     }
 
-    /**
-     * Twitch's baseline user rate limit is 20 PRIVMSGs per 30 seconds. We use
-     * a tiny sliding-window limiter here so callers naturally backpressure
-     * instead of writing directly to the socket and getting disconnected.
-     */
     private suspend fun awaitSendPermit(channelLogin: String) {
         while (true) {
             val waitMillis = sendRateLimitMutex.withLock {

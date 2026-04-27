@@ -4,13 +4,6 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
-/**
- * Secure local storage for the Twitch OAuth session.
- *
- * This is deliberately a tiny key-value wrapper instead of a rich repository:
- * auth policy belongs in [com.example.chatterinomobile.data.repository.TwitchOAuthRepository],
- * while this class only owns persistence and serialization boundaries.
- */
 class TokenStore(context: Context) {
 
     private val appContext = context.applicationContext
@@ -46,11 +39,6 @@ class TokenStore(context: Context) {
         sharedPreferences().edit().clear().apply()
     }
 
-    /**
-     * EncryptedSharedPreferences can occasionally fail to open after device
-     * restores / key invalidation events. Rather than crash the whole app on
-     * launch, we wipe the corrupted store and recreate it once.
-     */
     private fun sharedPreferences() =
         runCatching { createSharedPreferences() }
             .recoverCatching {

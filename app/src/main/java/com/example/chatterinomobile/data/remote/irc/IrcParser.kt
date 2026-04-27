@@ -1,23 +1,5 @@
 package com.example.chatterinomobile.data.remote.irc
 
-/**
- * Parses a single IRC wire-format line into an [IrcMessage].
- *
- * Grammar (RFC 1459 + IRCv3 tags, simplified for Twitch's usage):
- * ```
- * line    ::= ['@' tags SPACE] [':' prefix SPACE] command *(SPACE middle) [SPACE ':' trailing]
- * tags    ::= tag *(';' tag)
- * tag     ::= key ['=' escaped_value]
- * ```
- *
- * Tag values use a custom escape scheme (`\s` = space, `\n` = LF, `\r` = CR,
- * `\:` = `;`, `\\` = `\`) which we unescape during parsing so consumers see
- * the real values.
- *
- * This parser is zero-allocation hostile but simple — it's run once per line
- * in a background coroutine, not in a hot render loop, so clarity beats
- * micro-optimization.
- */
 object IrcParser {
 
     fun parse(line: String): IrcMessage? {
@@ -26,9 +8,8 @@ object IrcParser {
         var cursor = 0
         val length = line.length
 
-        // --- IRCv3 tags ---------------------------------------------------
         val tags: Map<String, String> = if (cursor < length && line[cursor] == '@') {
-            cursor++ // consume '@'
+            cursor++
             val spaceIdx = line.indexOf(' ', cursor)
             if (spaceIdx < 0) return null
             val raw = line.substring(cursor, spaceIdx)
@@ -38,9 +19,8 @@ object IrcParser {
             emptyMap()
         }
 
-        // --- Prefix --------------------------------------------------------
         val prefix: String? = if (cursor < length && line[cursor] == ':') {
-            cursor++ // consume ':'
+            cursor++
             val spaceIdx = line.indexOf(' ', cursor)
             if (spaceIdx < 0) return null
             val p = line.substring(cursor, spaceIdx)
@@ -50,18 +30,15 @@ object IrcParser {
             null
         }
 
-        // --- Command -------------------------------------------------------
         val commandEnd = line.indexOf(' ', cursor).let { if (it < 0) length else it }
         val command = line.substring(cursor, commandEnd).uppercase()
         cursor = if (commandEnd < length) commandEnd + 1 else length
         if (command.isEmpty()) return null
 
-        // --- Params --------------------------------------------------------
         val params = mutableListOf<String>()
         while (cursor < length) {
             if (line[cursor] == ':') {
-                // Trailing parameter: everything after this is one param,
-                // even if it contains spaces.
+
                 params.add(line.substring(cursor + 1))
                 break
             }
@@ -94,7 +71,6 @@ object IrcParser {
         return out
     }
 
-    /** IRCv3 tag-value escape decoding. See https://ircv3.net/specs/extensions/message-tags.html */
     private fun unescapeTagValue(value: String): String {
         if (value.indexOf('\\') < 0) return value
         val sb = StringBuilder(value.length)
@@ -108,7 +84,7 @@ object IrcParser {
                     'n' -> sb.append('\n')
                     'r' -> sb.append('\r')
                     '\\' -> sb.append('\\')
-                    else -> sb.append(value[i + 1]) // fall-through: drop the backslash
+                    else -> sb.append(value[i + 1])
                 }
                 i += 2
             } else {

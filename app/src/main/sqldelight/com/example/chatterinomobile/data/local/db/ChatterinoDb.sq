@@ -1,0 +1,113 @@
+-- Persistent chat history.
+--
+-- Design notes (important — revisit before changing schema):
+--
+-- * `channel_id` is the Twitch user ID, not the login. Logins can be renamed
+--   out from under us, user IDs are immutable. Existing code resolves login
+--   -> id via ChannelRepository on join.
+--
+-- * `seq` is a monotonically increasing per-row INTEGER assigned by SQLite
+--   (via ROWID). We rely on `rowid`/`seq` ordering rather than `received_at`
+--   because two messages within the same millisecond are common on fast
+--   chats and must preserve arrival order.
+--
+-- * `author_id`, `author_login`, `author_display_name`, `author_color`,
+--   `author_paint_json` are denormalized on purpose. A chat log is a
+--   historical record — if the user changes their name color next week we
+--   do NOT want old rows to silently repaint. Denormalized columns make
+--   scrollback deterministic and keep reads to a single table.
+--
+-- * `fragments_json` stores the *already-enriched* MessageFragment list
+--   (including emote URLs captured at the moment the message was received).
+--   This means cold-start scrollback renders correctly even if the user is
+--   offline and the third-party emote cache is empty. We trade disk size
+--   for render predictability.
+--
+-- * `badges_json` same rationale: badges change over time (a user loses
+--   mod, gets VIP) so the badges that were visible AT the time of the
+--   message are what we persist.
+--
+-- * Ring buffer: each channel keeps at most ~2000 messages. Trim is an
+--   index-scan DELETE on `(channel_id, seq)`, no JOINs.
+CREATE TABLE IF NOT EXISTS message (
+    seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id          TEXT    NOT NULL,
+    channel_login       TEXT    NOT NULL,
+    twitch_message_id   TEXT    NOT NULL,
+    received_at_millis  INTEGER NOT NULL,
+
+    author_id           TEXT    NOT NULL,
+    author_login        TEXT    NOT NULL,
+    author_display_name TEXT    NOT NULL,
+    author_color        TEXT,
+    author_paint_json   TEXT,
+
+    -- Enriched fragments (paints applied, third-party emotes resolved).
+    fragments_json      TEXT    NOT NULL,
+    badges_json         TEXT    NOT NULL,
+    reply_json          TEXT,
+    message_type_json   TEXT    NOT NULL
+);
+
+-- Range scans by channel go through this composite index; trimming and
+-- `recent(channel_id)` both drive off it.
+CREATE INDEX IF NOT EXISTS message_by_channel_seq
+    ON message(channel_id, seq);
+
+-- Same idea but for deduping on Twitch's message UUID. Rare in practice
+-- (Twitch doesn't re-deliver) but cheap enough to prevent pathological
+-- cases from duplicating the log on reconnect flurries.
+CREATE UNIQUE INDEX IF NOT EXISTS message_dedup
+    ON message(twitch_message_id);
+
+insert:
+INSERT OR IGNORE INTO message(
+    channel_id, channel_login, twitch_message_id, received_at_millis,
+    author_id, author_login, author_display_name, author_color, author_paint_json,
+    fragments_json, badges_json, reply_json, message_type_json
+) VALUES (
+    :channelId, :channelLogin, :twitchMessageId, :receivedAtMillis,
+    :authorId, :authorLogin, :authorDisplayName, :authorColor, :authorPaintJson,
+    :fragmentsJson, :badgesJson, :replyJson, :messageTypeJson
+);
+
+-- Most recent `:limit` rows for the given channel, oldest-first so callers
+-- can emit them into the UI in natural chat order without reversing.
+recent:
+SELECT * FROM message
+WHERE channel_id = :channelId
+ORDER BY seq DESC
+LIMIT :limit;
+
+countForChannel:
+SELECT COUNT(*) FROM message WHERE channel_id = :channelId;
+
+-- Drop everything older than the `:keepCount`th-newest row in this channel.
+-- Implemented as a correlated subquery so the ring buffer is always exact
+-- (not just approximately bounded on the next write).
+trimChannel:
+DELETE FROM message
+WHERE channel_id = :channelId
+  AND seq <= (
+    SELECT seq FROM message
+    WHERE channel_id = :channelId
+    ORDER BY seq DESC
+    LIMIT 1 OFFSET :keepCount
+  );
+
+-- Retroactive moderation: timeout / ban / single-message delete. Chat
+-- history on rejoin should reflect the same redactions the user already
+-- saw live, so the ChatRepository mirrors incoming ModerationEvents into
+-- one of these mutations.
+deleteByMessageId:
+DELETE FROM message WHERE twitch_message_id = :twitchMessageId;
+
+deleteByChannelAndAuthor:
+DELETE FROM message
+WHERE channel_id = :channelId AND author_id = :authorId;
+
+deleteByChannel:
+DELETE FROM message WHERE channel_id = :channelId;
+
+deleteAll:
+DELETE FROM message;

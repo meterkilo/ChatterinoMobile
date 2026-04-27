@@ -8,16 +8,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/**
- * Holds the paint table in a `Map<twitchUserId, Paint>`. Populated by one
- * network call on startup (and on manual refresh). Reads are lock-free and
- * happen on every message render.
- *
- * Note: a given user only has one active paint at a time. If the 7TV API
- * returns a user under multiple paints (shouldn't happen, but the `users`
- * field is a free-form list), the *last* one wins — consistent with how the
- * 7TV browser extension resolves the same case.
- */
 class PaintRepositoryImpl(
     private val sevenTvCosmeticsApi: SevenTvCosmeticsApi
 ) : PaintRepository {

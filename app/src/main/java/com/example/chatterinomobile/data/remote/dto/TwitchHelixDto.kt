@@ -3,11 +3,6 @@ package com.example.chatterinomobile.data.remote.dto
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Envelope shared by most Helix list endpoints: `{ "data": [...] }`.
- * We ignore pagination cursors for now since every caller in this module
- * fetches small bounded sets (by login or by broadcaster_id).
- */
 @Serializable
 data class HelixListResponse<T>(
     val data: List<T> = emptyList()

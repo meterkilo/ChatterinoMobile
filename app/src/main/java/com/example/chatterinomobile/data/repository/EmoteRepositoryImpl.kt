@@ -19,33 +19,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/**
- * Loads emotes from 7TV, BTTV, and FFZ and keeps them in in-memory lookup
- * tables keyed by emote name.
- *
- * Caching layers, outside-in:
- *
- * 1. Hot path: lock-free `HashMap` read in [findEmote]. Every inbound
- *    message hits this, so taking a mutex here would be catastrophic.
- * 2. Disk: [EmoteDiskCache] holds the last successful fetch for global +
- *    each channel. Cold start serves disk immediately (stale-while-revalidate)
- *    so the user sees third-party emotes on the very first message instead
- *    of waiting on four provider HTTP round-trips.
- * 3. Dimensions: [EmoteDimensionStore] learns real `(w, h)` values for
- *    BTTV / FFZ (which don't return them in API responses) on first decode
- *    and persists them. This makes aspect-ratio pre-allocation survive app
- *    restart, which is Twick's "no layout jump" trick.
- *
- * TTL strategy is stale-while-revalidate rather than blocking: if the
- * on-disk snapshot is past TTL we still serve it *now* and fire a network
- * refresh in the background. Users re-entering a channel at 31min don't wait
- * 500ms for fresh data; the next message benefits.
- *
- * Idle eviction: every channel map is timestamped on each read. A ticker
- * drops any channel idle past [CHANNEL_IDLE_EVICT_MILLIS] so a session that
- * bounces across 20 streams doesn't accumulate unbounded memory. The global
- * map never evicts — it's small (~500-2000 entries) and always relevant.
- */
 class EmoteRepositoryImpl(
     private val sevenTvApi: SevenTvApi,
     private val bttvApi: BttvApi,
@@ -66,8 +39,7 @@ class EmoteRepositoryImpl(
     private val mutex = Mutex()
 
     init {
-        // Dimension store must be available before the renderer ever calls
-        // findEmote; loading is cheap (one JSON file, a few KB).
+
         scope.launch { dimensionStore.ensureLoaded() }
         scope.launch { idleEvictionLoop() }
     }
@@ -95,8 +67,7 @@ class EmoteRepositoryImpl(
         val prior = dimensionStore.get(emoteId)
         if (prior != null && prior.width == width && prior.height == height) return
         dimensionStore.record(emoteId, width, height)
-        // Patch the on-disk snapshot so a cold start picks up the upgraded
-        // ratio without having to re-learn it during the very first frame.
+
         scope.launch { patchDiskAspectRatio(emoteId, channelId, width, height) }
     }
 
@@ -115,11 +86,6 @@ class EmoteRepositoryImpl(
         channelLastAccessedAtMillis.remove(channelId)
     }
 
-    /**
-     * Overlay any learned dimensions from the dimension store on top of the
-     * stored [Emote]. This keeps the on-disk metadata canonical (provider
-     * URLs etc.) and the learned dimensions hot-swappable without a rewrite.
-     */
     private fun decorate(emote: Emote): Emote {
         if (emote.aspectRatio != null) return emote
         val learned = dimensionStore.get(emote.id) ?: return emote
@@ -143,7 +109,6 @@ class EmoteRepositoryImpl(
 
         if (!needsRefresh) return
 
-        // Kick off the refresh but don't block on it when we already served disk.
         val refresh = scope.launch { refreshGlobalFromNetwork() }
         if (snapshot == null) refresh.join()
     }
@@ -177,8 +142,6 @@ class EmoteRepositoryImpl(
 
         if (!needsRefresh) return
 
-        // Dedup concurrent joins of the same channel — they share one
-        // network request rather than hammering the providers three times.
         val refresh: Deferred<Map<String, Emote>> = mutex.withLock {
             inFlightLoads[channelId] ?: scope.async {
                 runCatching { fetchChannelEmotes(channelId) }.getOrElse { emptyMap() }
@@ -210,14 +173,11 @@ class EmoteRepositoryImpl(
         height: Int
     ) {
         val ratio = width.toFloat() / height.toFloat()
-        // Walk the in-memory tables looking for the matching emote so we
-        // patch the right scope on disk. Channel-scoped emotes live in
-        // exactly one channel's file at a time.
+
         val (owningChannelId, emote) = locateEmote(emoteId, channelId) ?: return
         if (emote.aspectRatio == ratio) return
         val updated = emote.copy(aspectRatio = ratio)
-        // Reflect into the in-memory map too so the next findEmote() call
-        // doesn't re-pay the dimension-store lookup.
+
         mutex.withLock {
             if (owningChannelId == null) {
                 globalEmotesByName[emote.name] = updated
@@ -242,11 +202,6 @@ class EmoteRepositoryImpl(
         return null
     }
 
-    /**
-     * Background coroutine that evicts idle channel maps. Running this as a
-     * long-lived loop instead of on-write lets us evict even when the user
-     * is idle in a single channel (no writes = no event to trigger cleanup).
-     */
     private suspend fun idleEvictionLoop() {
         while (true) {
             delay(IDLE_EVICTION_TICK_MILLIS)
@@ -268,11 +223,6 @@ class EmoteRepositoryImpl(
         }
     }
 
-    /**
-     * Chatterino desktop resolves name collisions as BTTV > FFZ > 7TV.
-     * We reproduce that by inserting lower-priority providers first and letting
-     * later puts overwrite earlier ones.
-     */
     private fun mergeWithPrecedence(
         sevenTv: List<Emote>,
         ffz: List<Emote>,

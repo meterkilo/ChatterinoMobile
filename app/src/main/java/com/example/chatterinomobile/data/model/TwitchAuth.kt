@@ -1,10 +1,5 @@
 package com.example.chatterinomobile.data.model
 
-/**
- * Terminal outcomes of completing a Twitch implicit-grant authorization.
- *
- * The UI only needs to know whether the flow completed, was denied, or failed.
- */
 sealed interface TwitchImplicitAuthResult {
 
     data class Authorized(

@@ -69,10 +69,6 @@ class MainActivity : ComponentActivity() {
             val chatState by chatViewModel.uiState.collectAsState()
             val settingsState by settingsViewModel.uiState.collectAsState()
 
-            // Single seam between the tabs VM and the chat VM. ChannelTabs
-            // owns selection; Chat reacts to it. Keeping this in the screen
-            // (rather than coupling the two VMs) keeps both unit-testable
-            // in isolation.
             LaunchedEffect(activeChannel.channelLogin, activeChannel.hydration?.channelId) {
                 chatViewModel.setActiveChannel(
                     channelLogin = activeChannel.channelLogin,

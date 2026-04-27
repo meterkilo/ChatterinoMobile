@@ -12,10 +12,6 @@ fun SevenTvActiveEmoteDto.toDomain(): Emote {
     val files = host.files
     val oneX = pickFile(files, "1x")
 
-    // 7TV files carry pixel dimensions, so we can seed aspectRatio at fetch
-    // time and skip the "learn on first decode" round-trip that BTTV/FFZ need.
-    // Using the 1x file keeps the math honest: every scale step is an integer
-    // multiple, so the ratio is identical across x1/x2/x3/x4.
     val ratio = if (oneX.height > 0) oneX.width.toFloat() / oneX.height.toFloat() else null
 
     return Emote(

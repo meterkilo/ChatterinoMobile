@@ -11,7 +11,7 @@ class FfzApi(private val httpClient: HttpClient) {
 
     suspend fun getGlobalEmotes(): List<FfzEmoteDto> {
         val response: FfzGlobalResponseDto = httpClient.get("$BASE_URL/set/global").body()
-        // Flatten: take only sets that are in default_sets, then concat their emotes.
+
         return response.defaultSets
             .mapNotNull { setId -> response.sets[setId.toString()] }
             .flatMap { it.emoticons }

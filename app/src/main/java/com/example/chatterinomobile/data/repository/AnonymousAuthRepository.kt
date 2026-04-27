@@ -2,12 +2,6 @@ package com.example.chatterinomobile.data.repository
 
 import com.example.chatterinomobile.data.model.TwitchImplicitAuthResult
 
-/**
- * Stub [AuthRepository] that always returns "no user logged in".
- *
- * All downstream callers must tolerate this (the IRC client falls back to a
- * `justinfan*` anonymous login, Helix endpoints that require auth return empty).
- */
 class AnonymousAuthRepository(
     private val clientId: String = ""
 ) : AuthRepository {

@@ -15,16 +15,6 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 
-/**
- * Twitch OAuth endpoints used by the mobile client.
- *
- * Important behavior:
- * - Device-code polling states such as `authorization_pending` and
- *   `slow_down` are modeled as typed results, not exceptions.
- * - Public-client refresh does not require a client secret.
- * - `/validate` is treated as a first-class part of session management because
- *   Twitch expects third-party clients to validate on startup and hourly.
- */
 class TwitchOAuthApi(
     private val httpClient: HttpClient
 ) {

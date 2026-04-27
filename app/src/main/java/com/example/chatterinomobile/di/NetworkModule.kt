@@ -42,26 +42,23 @@ val networkModule = module {
                 requestTimeoutMillis = 15_000
                 connectTimeoutMillis = 10_000
             }
-            // Needed by TwitchIrcClient to open wss://irc-ws.chat.twitch.tv
+
             install(WebSockets)
         }
     }
 
-    // Emote providers
     single { SevenTvApi(get()) }
     single { BttvApi(get()) }
     single { FfzApi(get()) }
 
-    // Cosmetics + Twitch
     single { SevenTvCosmeticsApi(get()) }
     single { TwitchOAuthApi(get()) }
     single { TwitchHelixApi(get(), get()) }
 
-    // Chat
     single { TwitchIrcClient(get(), get()) }
     single { IrcMessageMapper(get()) }
     single { ModerationEventMapper() }
     single { RoomStateMapper() }
     single { UserStateMapper(get()) }
-    single { MessageEnricher(get(), get()) } // EmoteRepository, PaintRepository
+    single { MessageEnricher(get(), get()) }
 }
