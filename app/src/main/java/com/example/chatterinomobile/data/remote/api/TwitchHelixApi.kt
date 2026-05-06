@@ -2,6 +2,7 @@ package com.example.chatterinomobile.data.remote.api
 
 import com.example.chatterinomobile.data.remote.dto.HelixBadgeSetDto
 import com.example.chatterinomobile.data.remote.dto.HelixFollowedChannelDto
+import com.example.chatterinomobile.data.remote.dto.HelixGameDto
 import com.example.chatterinomobile.data.remote.dto.HelixListResponse
 import com.example.chatterinomobile.data.remote.dto.HelixListResponseWithPagination
 import com.example.chatterinomobile.data.remote.dto.HelixSearchChannelDto
@@ -71,6 +72,29 @@ class TwitchHelixApi(
         )
     }
 
+
+    suspend fun getTopGames(limit: Int = 30): List<HelixGameDto> {
+        val token = authRepository.getAccessToken()
+        val clientId = authRepository.getClientId()
+        val response: HelixListResponseWithPagination<HelixGameDto> =
+            httpClient.get("$BASE_URL/games/top") {
+                applyAuth(clientId, token)
+                parameter("first", limit.coerceIn(1, 100))
+            }.body()
+        return response.data
+    }
+
+    suspend fun getStreamsByGameId(gameId: String, limit: Int = 30): List<HelixStreamDto> {
+        val token = authRepository.getAccessToken()
+        val clientId = authRepository.getClientId()
+        val response: HelixListResponseWithPagination<HelixStreamDto> =
+            httpClient.get("$BASE_URL/streams") {
+                applyAuth(clientId, token)
+                parameter("game_id", gameId)
+                parameter("first", limit.coerceIn(1, 100))
+            }.body()
+        return response.data
+    }
 
     suspend fun getTopStreams(limit: Int = 20): List<HelixStreamDto> {
         val token = authRepository.getAccessToken()

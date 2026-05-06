@@ -49,7 +49,7 @@ data class HelixStreamDto(
     @SerialName("started_at") val startedAt: String,
     val language: String? = null,
     @SerialName("thumbnail_url") val thumbnailUrl: String? = null,
-    val tags: List<String> = emptyList()
+    val tags: List<String>? = null
 )
 
 @Serializable
@@ -70,6 +70,14 @@ data class HelixFollowedChannelDto(
     @SerialName("broadcaster_login") val broadcasterLogin: String,
     @SerialName("broadcaster_name") val broadcasterName: String,
     @SerialName("followed_at") val followedAt: String
+)
+
+@Serializable
+data class HelixGameDto(
+    val id: String,
+    val name: String,
+    @SerialName("box_art_url") val boxArtUrl: String? = null,
+    @SerialName("igdb_id") val igdbId: String? = null
 )
 
 @Serializable

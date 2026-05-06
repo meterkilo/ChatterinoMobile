@@ -2,10 +2,12 @@ package com.example.chatterinomobile.di
 
 import com.example.chatterinomobile.BuildConfig
 import com.example.chatterinomobile.data.local.BadgeDiskCache
+import com.example.chatterinomobile.data.local.DiscoverySnapshotCache
 import com.example.chatterinomobile.data.local.DiskCacheRoot
 import com.example.chatterinomobile.data.local.EmoteDimensionStore
 import com.example.chatterinomobile.data.local.EmoteDiskCache
 import com.example.chatterinomobile.data.local.FollowListCache
+import com.example.chatterinomobile.data.local.PinnedChannelsStore
 import com.example.chatterinomobile.data.local.TokenStore
 import com.example.chatterinomobile.data.repository.AnonymousAuthRepository
 import com.example.chatterinomobile.data.repository.AuthRepository
@@ -31,6 +33,8 @@ val repositoryModule = module {
     single { EmoteDiskCache(get()) }
     single { BadgeDiskCache(get()) }
     single { FollowListCache(get()) }
+    single { DiscoverySnapshotCache(get()) }
+    single { PinnedChannelsStore(get()) }
     single { EmoteDimensionStore(get()) }
 
     single {

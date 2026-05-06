@@ -10,8 +10,8 @@ import org.koin.dsl.module
 
 val viewModelModule = module {
     viewModel { AuthViewModel(get()) }
-    viewModel { ChannelTabsViewModel(get()) }
+    viewModel { ChannelTabsViewModel(get(), get()) }
     viewModel { ChatViewModel(get()) }
     viewModel { SettingsViewModel(get()) }
-    viewModel { DiscoveryViewModel(get(), get(), get()) }
+    viewModel { DiscoveryViewModel(get(), get(), get(), get()) }
 }

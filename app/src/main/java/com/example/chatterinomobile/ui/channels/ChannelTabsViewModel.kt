@@ -2,6 +2,7 @@ package com.example.chatterinomobile.ui.channels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.chatterinomobile.data.local.PinnedChannelsStore
 import com.example.chatterinomobile.data.model.ChannelHydrationState
 import com.example.chatterinomobile.data.model.RoomState
 import com.example.chatterinomobile.data.model.UserChatState
@@ -15,13 +16,14 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class ChannelTabsViewModel(
-    private val chatRepository: ChatRepository
+    private val chatRepository: ChatRepository,
+    private val pinnedChannelsStore: PinnedChannelsStore
 ) : ViewModel() {
 
     private val _activeChannelLogin = MutableStateFlow<String?>(null)
     val activeChannelLogin: StateFlow<String?> = _activeChannelLogin.asStateFlow()
 
-    private val _joinedChannels = MutableStateFlow<List<String>>(emptyList())
+    private val _joinedChannels = MutableStateFlow<List<String>>(pinnedChannelsStore.read())
     val joinedChannels: StateFlow<List<String>> = _joinedChannels.asStateFlow()
 
     val activeChannel: StateFlow<ActiveChannelState> = combine(
@@ -60,7 +62,7 @@ class ChannelTabsViewModel(
         if (normalized.isBlank()) return
 
         if (normalized !in _joinedChannels.value) {
-            _joinedChannels.value = _joinedChannels.value + normalized
+            updateJoined(_joinedChannels.value + normalized)
         }
         _activeChannelLogin.value = normalized
         _errorMessage.value = null
@@ -70,12 +72,17 @@ class ChannelTabsViewModel(
                 .onFailure {
                     _errorMessage.value = it.message ?: "Failed to join channel"
 
-                    _joinedChannels.value = _joinedChannels.value - normalized
+                    updateJoined(_joinedChannels.value - normalized)
                     if (_activeChannelLogin.value == normalized) {
                         _activeChannelLogin.value = _joinedChannels.value.lastOrNull()
                     }
                 }
         }
+    }
+
+    private fun updateJoined(next: List<String>) {
+        _joinedChannels.value = next
+        pinnedChannelsStore.write(next)
     }
 
     fun selectChannel(channelLogin: String) {
@@ -89,7 +96,7 @@ class ChannelTabsViewModel(
         if (normalized.isBlank()) return
 
         val remaining = _joinedChannels.value - normalized
-        _joinedChannels.value = remaining
+        updateJoined(remaining)
         if (_activeChannelLogin.value == normalized) {
             _activeChannelLogin.value = remaining.lastOrNull()
         }
