@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val authState by authViewModel.uiState.collectAsState()
             val activeChannel by tabsViewModel.activeChannel.collectAsState()
+            val joinedChannels by tabsViewModel.joinedChannels.collectAsState()
 
             var onboardingComplete by rememberSaveable { mutableStateOf(false) }
             LaunchedEffect(authState.isLoggedIn, authState.isLoading) {
@@ -111,7 +112,9 @@ class MainActivity : ComponentActivity() {
                         ) {
                             composable(Routes.Discovery) {
                                 DiscoveryScreen(
-                                    onJoinChannel = tabsViewModel::joinChannel
+                                    pinnedChannelLogins = joinedChannels,
+                                    onJoinChannel = tabsViewModel::joinChannel,
+                                    onRemovePin = tabsViewModel::leaveChannel
                                 )
                             }
                             composable(Routes.Chat) {

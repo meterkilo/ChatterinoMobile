@@ -3,6 +3,7 @@ package com.example.chatterinomobile.ui.discovery
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
@@ -60,29 +62,35 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.chatterinomobile.data.model.Channel
 import com.example.chatterinomobile.ui.theme.Twick
+import kotlin.math.roundToInt
 import org.koin.androidx.compose.koinViewModel
 
 @Composable
 fun DiscoveryScreen(
     onJoinChannel: (String) -> Unit,
+    onRemovePin: (String) -> Unit = {},
     modifier: Modifier = Modifier,
+    pinnedChannelLogins: List<String> = emptyList(),
     viewModel: DiscoveryViewModel = koinViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -124,7 +132,14 @@ fun DiscoveryScreen(
                     state.error != null && state.followedLive.isEmpty() && state.recommendedStreams.isEmpty() ->
                         ErrorBody(message = state.error!!, onRetry = viewModel::refresh)
                     else -> when (activeTab) {
-                        0 -> HomeBody(state = state, onJoinChannel = onJoinChannel, onSearch = viewModel::openSearch)
+                        0 -> HomeBody(
+                            state = state,
+                            pinnedChannelLogins = pinnedChannelLogins,
+                            onJoinChannel = onJoinChannel,
+                            onRemovePin = onRemovePin,
+                            onSearch = viewModel::openSearch,
+                            onRefresh = viewModel::refresh
+                        )
                         1 -> BrowseBody(state = state, onJoinChannel = onJoinChannel)
                         2 -> YouBody()
                         else -> BrowseBody(state = state, onJoinChannel = onJoinChannel)
@@ -422,36 +437,86 @@ private enum class PinnedKind { Channel, Chat }
 
 private data class PinnedItem(
     val kind: PinnedKind,
+    val login: String,
     val name: String,
     val subtitle: String,
     val message: String? = null,
     val platform: String? = "twitch",
     val isLive: Boolean = false,
     val viewers: String? = null,
+    val imageUrl: String? = null,
     val unread: Int = 0,
     val mention: Boolean = false,
     val scheduled: String? = null
 )
 
-private val samplePinnedItems = listOf(
-    PinnedItem(PinnedKind.Channel, "Hasanabi", "Politics", platform = "twitch", isLive = true, viewers = "24.8K", unread = 412, mention = true),
-    PinnedItem(PinnedKind.Chat, "CDawgVA", "last chat · 2h", "\"new collab tomorrow @everyone\"", platform = "twitch", unread = 8),
-    PinnedItem(PinnedKind.Channel, "Caseoh_", "Schedule I", platform = "kick", isLive = true, viewers = "18.2K"),
-    PinnedItem(PinnedKind.Channel, "Emiru", "Just Chatting", platform = "twitch", isLive = true, viewers = "6.4K", unread = 23),
-    PinnedItem(PinnedKind.Chat, "Lirik", "last chat · y'day", "\"yo solid play that was insane\"", platform = "twitch"),
-    PinnedItem(PinnedKind.Channel, "Valkyrae", "Goes live ~7pm", platform = "youtube", scheduled = "7:00 PM"),
-    PinnedItem(PinnedKind.Chat, "XQC squad", "group · 4 members", "Train: \"see you in 10\"", platform = null, unread = 2, mention = true)
-)
+private fun buildHomePinnedItems(state: DiscoveryUiState, pinnedChannelLogins: List<String>): List<PinnedItem> {
+    val channelsByLogin = (state.followedLive + state.recommendedStreams + state.searchResults)
+        .distinctBy { it.login.lowercase() }
+        .associateBy { it.login.lowercase() }
+    return pinnedChannelLogins
+        .map { it.lowercase().removePrefix("#").trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .map { login ->
+            channelsByLogin[login]?.toPinnedItem()
+                ?: PinnedItem(
+                    kind = PinnedKind.Channel,
+                    login = login,
+                    name = login,
+                    subtitle = "Pinned chat",
+                    isLive = false
+                )
+        }
+}
+
+private fun Channel.toPinnedItem(): PinnedItem =
+    PinnedItem(
+        kind = PinnedKind.Channel,
+        login = login,
+        name = displayName,
+        subtitle = if (isLive) gameName ?: "Live now" else "Pinned chat",
+        message = title,
+        isLive = isLive,
+        viewers = if (isLive) formatViewers(viewerCount) else null,
+        imageUrl = profileImageUrl
+    )
 
 @Composable
 private fun HomeBody(
     state: DiscoveryUiState,
+    pinnedChannelLogins: List<String>,
     onJoinChannel: (String) -> Unit,
-    onSearch: () -> Unit
+    onRemovePin: (String) -> Unit,
+    onSearch: () -> Unit,
+    onRefresh: () -> Unit
 ) {
-    val carouselChannels = (state.followedLive + state.recommendedStreams).distinctBy { it.login }.take(10)
-    val heroChannel = carouselChannels.firstOrNull()
-    val liveCount = samplePinnedItems.count { it.isLive } + if (heroChannel?.isLive == true) 1 else 0
+    val pinnedItems = remember(
+        state.followedLive,
+        state.recommendedStreams,
+        state.searchResults,
+        pinnedChannelLogins
+    ) {
+        buildHomePinnedItems(state, pinnedChannelLogins)
+    }
+    val carouselChannels = (state.followedLive + state.recommendedStreams)
+        .distinctBy { it.login }
+        .take(10)
+    val channelsByLogin = (state.followedLive + state.recommendedStreams + state.searchResults)
+        .distinctBy { it.login.lowercase() }
+        .associateBy { it.login.lowercase() }
+    val heroChannel = pinnedChannelLogins
+        .map { it.lowercase().removePrefix("#").trim() }
+        .firstNotNullOfOrNull { login -> channelsByLogin[login]?.takeIf { it.isLive } }
+    var selectedFilter by remember { mutableIntStateOf(0) }
+    val visiblePinnedItems = remember(pinnedItems, selectedFilter) {
+        when (selectedFilter) {
+            1 -> pinnedItems.filter { it.isLive }
+            2 -> pinnedItems.filterNot { it.isLive }
+            else -> pinnedItems
+        }
+    }
+    val liveCount = pinnedItems.count { it.isLive }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -459,9 +524,9 @@ private fun HomeBody(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
         ) {
-            HomeHeader(liveCount = liveCount, savedCount = samplePinnedItems.size + 1, onSearch = onSearch)
-            HomeFilterPills()
-            PullToRefreshHint()
+            HomeHeader(liveCount = liveCount, savedCount = pinnedItems.size, onSearch = onSearch)
+            HomeFilterPills(selectedFilter = selectedFilter, onFilterSelected = { selectedFilter = it })
+            PullToRefreshHint(onRefresh = onRefresh)
 
             if (carouselChannels.isNotEmpty()) {
                 SectionHeader(title = "Live carousel")
@@ -469,7 +534,9 @@ private fun HomeBody(
                 Spacer(Modifier.height(6.dp))
             }
 
-            HomeHeroCard(channel = heroChannel, onJoinChannel = onJoinChannel)
+            if (heroChannel != null) {
+                HomeHeroCard(channel = heroChannel, onJoinChannel = onJoinChannel)
+            }
 
             Row(
                 modifier = Modifier
@@ -479,7 +546,7 @@ private fun HomeBody(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Saved channels & chats",
+                    text = "Pinned chats",
                     color = Twick.Ink,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
@@ -497,40 +564,103 @@ private fun HomeBody(
                 }
             }
 
-            Column(
-                modifier = Modifier.padding(horizontal = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                samplePinnedItems.forEachIndexed { index, item ->
-                    PinnedRow(
-                        item = item,
-                        index = index,
-                        pressed = index == 4,
-                        swiped = index == 2,
-                        onClick = {
-                            val match = carouselChannels.firstOrNull {
-                                it.login.equals(item.name, ignoreCase = true) ||
-                                    it.displayName.equals(item.name, ignoreCase = true)
-                            }
-                            if (match != null) onJoinChannel(match.login)
-                        }
-                    )
+            if (pinnedItems.isEmpty()) {
+                EmptyHomePinnedState(onSearch = onSearch)
+            } else if (visiblePinnedItems.isEmpty()) {
+                EmptyFilteredPinnedState()
+            } else {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    visiblePinnedItems.forEachIndexed { index, item ->
+                        PinnedRow(
+                            item = item,
+                            index = index,
+                            onClick = { onJoinChannel(item.login) },
+                            onRemovePin = { onRemovePin(item.login) }
+                        )
+                    }
                 }
             }
 
             Spacer(Modifier.height(160.dp))
         }
 
-        HomeNowPlayingBar(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(start = 8.dp, end = 8.dp, bottom = 66.dp)
-        )
-
         AddPinFab(
+            onClick = onSearch,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 138.dp)
+                .padding(end = 16.dp, bottom = 98.dp)
+        )
+    }
+}
+
+@Composable
+private fun EmptyHomePinnedState(onSearch: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(64.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Twick.S2)
+                .border(1.dp, Twick.Hairline, RoundedCornerShape(20.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Filled.Search, contentDescription = null, tint = Twick.Ink, modifier = Modifier.size(28.dp))
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(
+            text = "No pinned chats yet",
+            color = Twick.Ink,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "Open a chat from Browse or Search to pin it here.",
+            color = Twick.Ink3,
+            fontSize = 13.sp
+        )
+        Spacer(Modifier.height(18.dp))
+        Row(
+            modifier = Modifier
+                .height(42.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Twick.Accent)
+                .clickable(onClick = onSearch)
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(Icons.Filled.Search, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Text(
+                text = "Find channels",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyFilteredPinnedState() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 28.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "Nothing in this view yet",
+            color = Twick.Ink3,
+            fontSize = 13.sp
         )
     }
 }
@@ -584,30 +714,17 @@ private fun HomeHeader(liveCount: Int, savedCount: Int, onSearch: () -> Unit) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             TopBarIconButton(icon = Icons.Filled.Search, onClick = onSearch)
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable {},
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Filled.Notifications, contentDescription = null, tint = Twick.Ink, modifier = Modifier.size(21.dp))
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .offset((-8).dp, 8.dp)
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(Twick.Live)
-                        .border(2.dp, Twick.Bg, CircleShape)
-                )
-            }
         }
     }
 }
 
 @Composable
-private fun HomeFilterPills() {
+private fun HomeFilterPills(selectedFilter: Int, onFilterSelected: (Int) -> Unit) {
+    val filters = listOf(
+        "All" to null,
+        "Live" to Twick.Live,
+        "Offline" to null
+    )
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -615,24 +732,27 @@ private fun HomeFilterPills() {
             .fillMaxWidth()
             .padding(bottom = 12.dp)
     ) {
-        item { SoftPill(text = "All", active = true) }
-        item { SoftPill(text = "Live", leadingDot = Twick.Live) }
-        item { SoftPill(text = "Unread") }
-        item { SoftPill(text = "Channels") }
-        item { SoftPill(text = "Chats") }
-        item { SoftPill(text = "Groups") }
+        items(filters.size) { index ->
+            val (label, dot) = filters[index]
+            SoftPill(
+                text = label,
+                active = selectedFilter == index,
+                leadingDot = dot,
+                onClick = { onFilterSelected(index) }
+            )
+        }
     }
 }
 
 @Composable
-private fun SoftPill(text: String, active: Boolean = false, leadingDot: Color? = null) {
+private fun SoftPill(text: String, active: Boolean = false, leadingDot: Color? = null, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .height(36.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(if (active) Twick.Ink else Twick.S2)
             .border(1.dp, if (active) Color.Transparent else Twick.Hairline, RoundedCornerShape(12.dp))
-            .clickable {}
+            .clickable(onClick = onClick)
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -655,10 +775,11 @@ private fun SoftPill(text: String, active: Boolean = false, leadingDot: Color? =
 }
 
 @Composable
-private fun PullToRefreshHint() {
+private fun PullToRefreshHint(onRefresh: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onRefresh)
             .padding(bottom = 10.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
@@ -791,9 +912,8 @@ private fun HomeHeroCard(channel: Channel?, onJoinChannel: (String) -> Unit) {
 private fun PinnedRow(
     item: PinnedItem,
     index: Int,
-    pressed: Boolean,
-    swiped: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onRemovePin: () -> Unit
 ) {
     val restShape = when (index % 4) {
         1 -> RoundedCornerShape(topStart = 24.dp, topEnd = 12.dp, bottomEnd = 24.dp, bottomStart = 12.dp)
@@ -801,52 +921,116 @@ private fun PinnedRow(
         3 -> RoundedCornerShape(topStart = 12.dp, topEnd = 24.dp, bottomEnd = 12.dp, bottomStart = 24.dp)
         else -> RoundedCornerShape(20.dp)
     }
+    var offsetX by remember(item.login) { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    val actionWidth = 88.dp
+    val density = LocalDensity.current
+    val actionWidthPx = with(density) { actionWidth.toPx() }
+    val swipeProgress = (-offsetX / actionWidthPx).coerceIn(0f, 1f)
 
-    if (swiped) {
-        Box(modifier = Modifier.height(72.dp)) {
-            Row(
-                modifier = Modifier
-                    .matchParentSize()
-                    .padding(end = 4.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                PinnedSwipeAction(icon = Icons.AutoMirrored.Filled.VolumeOff, label = "Mute", color = Twick.Accent)
-                Spacer(Modifier.width(4.dp))
-                PinnedSwipeAction(icon = Icons.Filled.Bookmark, label = "Archive", color = Twick.Live)
-            }
-            PinnedRowInner(
-                item = item,
-                shape = restShape,
-                pressed = false,
-                onClick = onClick,
-                modifier = Modifier.offset(x = (-148).dp)
+    Box(modifier = Modifier.height(72.dp)) {
+        Row(
+            modifier = Modifier
+                .matchParentSize()
+                .padding(end = 4.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PinnedRemoveSwipeAction(
+                progress = swipeProgress,
+                actionWidth = actionWidth,
+                onClick = onRemovePin
             )
         }
-    } else {
         PinnedRowInner(
             item = item,
-            shape = if (pressed) RoundedCornerShape(topStart = 32.dp, topEnd = 8.dp, bottomEnd = 32.dp, bottomStart = 8.dp) else restShape,
-            pressed = pressed,
-            onClick = onClick
+            shape = restShape,
+            pressed = false,
+            onClick = onClick,
+            modifier = Modifier
+                .offset { IntOffset(offsetX.roundToInt(), 0) }
+                .pointerInput(item.login) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (-offsetX >= actionWidthPx) {
+                                offsetX = 0f
+                                onRemovePin()
+                            } else {
+                                offsetX = 0f
+                            }
+                        },
+                        onDragCancel = { offsetX = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            offsetX = (offsetX + dragAmount).coerceIn(-actionWidthPx, 0f)
+                        }
+                    )
+                }
         )
     }
 }
 
 @Composable
-private fun PinnedSwipeAction(icon: ImageVector, label: String, color: Color) {
-    Column(
+private fun PinnedRemoveSwipeAction(progress: Float, actionWidth: Dp, onClick: () -> Unit) {
+    val color = Twick.Ink3
+    val armed = progress >= 0.995f
+    Box(
         modifier = Modifier
-            .width(72.dp)
+            .width(actionWidth)
             .height(72.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(color.copy(alpha = 0.16f)),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .padding(start = 10.dp, end = 4.dp),
+        contentAlignment = Alignment.CenterEnd
     ) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.height(4.dp))
-        Text(label, color = color, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+        if (armed) {
+            Column(
+                modifier = Modifier
+                    .width(68.dp)
+                    .height(64.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Twick.S2)
+                    .border(1.dp, Twick.Hairline, RoundedCornerShape(14.dp))
+                    .clickable(onClick = onClick),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.PushPin, contentDescription = null, tint = color, modifier = Modifier.size(19.dp))
+                    Box(
+                        modifier = Modifier
+                            .width(24.dp)
+                            .height(2.dp)
+                            .rotate(-35f)
+                            .background(color)
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Unpin",
+                    color = color,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
+            }
+        } else if (progress > 0.08f) {
+            Row(
+                modifier = Modifier.padding(end = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy((-9).dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = null,
+                    tint = color.copy(alpha = 0.18f + progress * 0.24f),
+                    modifier = Modifier.size(24.dp)
+                )
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = null,
+                    tint = color.copy(alpha = 0.28f + progress * 0.34f),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
     }
 }
 
@@ -872,9 +1056,9 @@ private fun PinnedRowInner(
     ) {
         Box(contentAlignment = Alignment.Center) {
             if (item.isLive) {
-                StoryRingAvatar(name = item.name, imageUrl = null, avatarSize = 48.dp, ringWidth = 2.dp, ringGap = 1.5.dp)
+                StoryRingAvatar(name = item.name, imageUrl = item.imageUrl, avatarSize = 48.dp, ringWidth = 2.dp, ringGap = 1.5.dp)
             } else {
-                AvatarCircle(name = item.name, size = 52.dp)
+                AvatarCircle(name = item.name, size = 52.dp, imageUrl = item.imageUrl)
             }
             item.platform?.let {
                 Box(
@@ -978,7 +1162,7 @@ private fun PinnedRowInner(
 }
 
 @Composable
-private fun HomeNowPlayingBar(modifier: Modifier = Modifier) {
+private fun HomeNowPlayingBar(channel: Channel, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1012,7 +1196,7 @@ private fun HomeNowPlayingBar(modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Box {
-                AvatarCircle(name = "Hasanabi", size = 36.dp)
+                AvatarCircle(name = channel.displayName, size = 36.dp, imageUrl = channel.profileImageUrl)
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -1030,7 +1214,7 @@ private fun HomeNowPlayingBar(modifier: Modifier = Modifier) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Box(modifier = Modifier.size(5.dp).clip(CircleShape).background(Twick.Live))
                     Text(
-                        text = "Hasanabi",
+                        text = channel.displayName,
                         color = Twick.Ink,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -1040,7 +1224,7 @@ private fun HomeNowPlayingBar(modifier: Modifier = Modifier) {
                     Text("AUDIO", color = Twick.Ink3, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                 }
                 Text(
-                    text = "Reacting to the new policy hearing",
+                    text = channel.title ?: channel.gameName ?: "@${channel.login}",
                     color = Twick.Ink3,
                     fontSize = 11.sp,
                     maxLines = 1,
@@ -1062,22 +1246,22 @@ private fun HomeNowPlayingBar(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun AddPinFab(modifier: Modifier = Modifier) {
+private fun AddPinFab(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
-            .height(52.dp)
-            .clip(RoundedCornerShape(18.dp))
+            .height(42.dp)
+            .clip(RoundedCornerShape(14.dp))
             .background(Twick.Accent)
-            .clickable {}
-            .padding(horizontal = 18.dp),
+            .clickable(onClick = onClick)
+            .padding(horizontal = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Icon(Icons.Filled.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+        Icon(Icons.Filled.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(17.dp))
         Text(
             text = "Add pin",
             color = Color.White,
-            fontSize = 14.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold
         )
     }
@@ -1275,7 +1459,6 @@ private fun DiscoveryTopBar(onSearch: () -> Unit) {
 
         Row {
             TopBarIconButton(icon = Icons.Filled.Search, onClick = onSearch)
-            TopBarIconButton(icon = Icons.Filled.Notifications, onClick = {})
         }
     }
 }
