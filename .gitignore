@@ -15,3 +15,6 @@
 local.properties
 CLAUDE.md
 *.py
+skills-lock.json
+.agents/
+/.idea/misc.xml

@@ -23,7 +23,8 @@ data class FfzRoomResponseDto(
 
 @Serializable
 data class FfzRoomDto(
-    val set: Int? = null
+    val set: Int? = null,
+    @SerialName("user_badge_ids") val userBadgeIds: Map<String, List<Long>> = emptyMap()
 )
 
 @Serializable
@@ -32,4 +33,20 @@ data class FfzEmoteDto(
     val name: String,
     val animated: Map<String, String>? = null,
     val urls: Map<String, String>
+)
+
+@Serializable
+data class FfzBadgesResponseDto(
+    val badges: List<FfzBadgeDto> = emptyList(),
+    val users: Map<String, List<Long>> = emptyMap()
+)
+
+@Serializable
+data class FfzBadgeDto(
+    val id: Int,
+    val name: String = "",
+    val title: String = "",
+    val urls: Map<String, String> = emptyMap(),
+    val width: Int = 18,
+    val height: Int = 18
 )

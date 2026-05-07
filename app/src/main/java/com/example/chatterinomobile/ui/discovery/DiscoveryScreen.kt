@@ -27,6 +27,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -54,6 +57,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -111,6 +115,10 @@ fun DiscoveryScreen(
     val state by viewModel.uiState.collectAsState()
     var activeTab by remember { mutableIntStateOf(0) }
 
+    LaunchedEffect(pinnedChannelLogins) {
+        viewModel.hydratePinnedChannels(pinnedChannelLogins)
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -140,7 +148,7 @@ fun DiscoveryScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = 88.dp)
+                    .padding(bottom = 78.dp)
             ) {
                 when {
                     state.isLoading && state.followedLive.isEmpty() && state.recommendedStreams.isEmpty() -> LoadingBody()
@@ -333,6 +341,9 @@ private fun SearchResultRow(channel: Channel, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
+                if (channel.isPartner) {
+                    PartnerBadge()
+                }
                 Text(
                     text = if (channel.isLive) "LIVE" else "OFFLINE",
                     color = if (channel.isLive) Color.White else Twick.Ink3,
@@ -356,11 +367,30 @@ private fun SearchResultRow(channel: Channel, onClick: () -> Unit) {
     }
 }
 
+@Composable
+private fun PartnerBadge(modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = Icons.Filled.Verified,
+        contentDescription = "Partner",
+        tint = Twick.Accent,
+        modifier = modifier.size(14.dp)
+    )
+}
+
 private fun buildSearchSubtitle(channel: Channel): String =
+    listOfNotNull(
+        channel.followerCount?.let { formatFollowers(it) },
+        when {
+            channel.isLive && channel.gameName != null -> channel.gameName
+            channel.isLive -> "Live"
+            else -> "@${channel.login}"
+        }
+    ).joinToString(" • ")
+
+private fun formatFollowers(count: Int): String =
     when {
-        channel.isLive && channel.gameName != null -> channel.gameName
-        channel.isLive -> "Live"
-        else -> "@${channel.login}"
+        count == 1 -> "1 follower"
+        else -> "${formatViewers(count)} followers"
     }
 
 @Composable
@@ -433,6 +463,9 @@ private fun ForYouBody(
 @Composable
 private fun FollowingBody(state: DiscoveryUiState, onJoinChannel: (String) -> Unit) {
     val liveLogins = state.followedLive.map { it.login }.toSet()
+    val knownChannelsByLogin = state.knownChannels
+        .distinctBy { it.login.lowercase() }
+        .associateBy { it.login.lowercase() }
 
     if (state.followedLogins.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -451,7 +484,8 @@ private fun FollowingBody(state: DiscoveryUiState, onJoinChannel: (String) -> Un
             .filter { it !in liveLogins }
             .take(30)
             .forEach { login ->
-                val offlineChannel = Channel(id = "", login = login, displayName = login)
+                val offlineChannel = knownChannelsByLogin[login.lowercase()]
+                    ?: Channel(id = "", login = login, displayName = login)
                 FollowingRow(channel = offlineChannel, isLive = false, onClick = { onJoinChannel(login) })
             }
         Spacer(Modifier.height(16.dp))
@@ -476,15 +510,15 @@ private data class PinnedItem(
 )
 
 private fun buildHomePinnedItems(state: DiscoveryUiState, pinnedChannelLogins: List<String>): List<PinnedItem> {
-    val channelsByLogin = (state.followedLive + state.recommendedStreams + state.searchResults)
+    val channelsByLogin = (state.followedLive + state.recommendedStreams + state.searchResults + state.knownChannels)
         .distinctBy { it.login.lowercase() }
         .associateBy { it.login.lowercase() }
     return pinnedChannelLogins
         .map { it.lowercase().removePrefix("#").trim() }
         .filter { it.isNotBlank() }
         .distinct()
-        .map { login ->
-            channelsByLogin[login]?.toPinnedItem()
+        .mapIndexed { index, login ->
+            val item = channelsByLogin[login]?.toPinnedItem()
                 ?: PinnedItem(
                     kind = PinnedKind.Channel,
                     login = login,
@@ -492,7 +526,13 @@ private fun buildHomePinnedItems(state: DiscoveryUiState, pinnedChannelLogins: L
                     subtitle = "Pinned Channels",
                     isLive = false
                 )
+            index to item
         }
+        .sortedWith(
+            compareByDescending<Pair<Int, PinnedItem>> { it.second.isLive }
+                .thenBy { it.first }
+        )
+        .map { it.second }
 }
 
 private fun Channel.toPinnedItem(): PinnedItem =
@@ -521,6 +561,7 @@ private fun HomeBody(
         state.followedLive,
         state.recommendedStreams,
         state.searchResults,
+        state.knownChannels,
         pinnedChannelLogins
     ) {
         buildHomePinnedItems(state, pinnedChannelLogins)
@@ -528,7 +569,7 @@ private fun HomeBody(
     val carouselChannels = (state.followedLive + state.recommendedStreams)
         .distinctBy { it.login }
         .take(10)
-    val channelsByLogin = (state.followedLive + state.recommendedStreams + state.searchResults)
+    val channelsByLogin = (state.followedLive + state.recommendedStreams + state.searchResults + state.knownChannels)
         .distinctBy { it.login.lowercase() }
         .associateBy { it.login.lowercase() }
     val heroChannel = pinnedChannelLogins
@@ -1345,6 +1386,9 @@ private fun BrowseBody(
 
     val pagerState = rememberPagerState(pageCount = { 3 })
     val showLayoutToggle = pagerState.currentPage != 2
+    val sortedFollowedLive = remember(state.followedLive) {
+        state.followedLive.sortedByDescending { it.viewerCount }
+    }
 
     LaunchedEffect(pagerState.currentPage) {
         selectedTab = pagerState.currentPage
@@ -1369,7 +1413,7 @@ private fun BrowseBody(
         ) { page ->
             when (page) {
                 0 -> BrowseChannelList(
-                    channels = state.followedLive.sortedByDescending { it.viewerCount },
+                    channels = sortedFollowedLive,
                     layout = layout,
                     emptyMessage = "No followed channels are live",
                     onJoinChannel = onJoinChannel
@@ -1700,11 +1744,15 @@ private fun ChannelSubtitleRow(channel: Channel) {
         if (name != null) {
             Text(
                 text = name,
-                color = Twick.Ink3,
+                color = Twick.Ink,
                 fontSize = 10.sp,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
             )
+            if (channel.isPartner) {
+                PartnerBadge(modifier = Modifier.size(11.dp))
+            }
         }
         if (name != null && game != null) {
             Text(
@@ -1728,83 +1776,73 @@ private fun ChannelSubtitleRow(channel: Channel) {
 
 @Composable
 private fun BrowseChannelGrid(channels: List<Channel>, onJoinChannel: (String) -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-            .verticalScroll(rememberScrollState())
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Spacer(Modifier.height(8.dp))
-        channels.chunked(2).forEach { pair ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+        gridItems(channels, key = { it.login }) { channel ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onJoinChannel(channel.login) }
             ) {
-                pair.forEach { channel ->
-                    Column(
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(thumbnailGradient(channel.login))
+                ) {
+                    if (channel.thumbnailUrl != null) {
+                        AsyncImage(
+                            model = channel.thumbnailUrl,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .padding(bottom = 12.dp)
-                            .clickable { onJoinChannel(channel.login) }
+                            .padding(4.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.Black.copy(alpha = 0.45f))
+                            .border(0.5.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 5.dp, vertical = 1.5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(16f / 9f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(thumbnailGradient(channel.login))
-                        ) {
-                            if (channel.thumbnailUrl != null) {
-                                AsyncImage(
-                                    model = channel.thumbnailUrl,
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                            Row(
-                                modifier = Modifier
-                                    .padding(4.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color.Black.copy(alpha = 0.45f))
-                                    .border(0.5.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(6.dp))
-                                    .padding(horizontal = 5.dp, vertical = 1.5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Person,
-                                    contentDescription = null,
-                                    tint = Twick.Live,
-                                    modifier = Modifier.size(8.dp)
-                                )
-                                Text(
-                                    text = formatViewers(channel.viewerCount),
-                                    color = Color.White,
-                                    fontSize = 8.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        if (!channel.title.isNullOrBlank()) {
-                            Text(
-                                text = channel.title,
-                                color = Twick.Ink,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        ChannelSubtitleRow(channel = channel)
+                        Icon(
+                            imageVector = Icons.Filled.Person,
+                            contentDescription = null,
+                            tint = Twick.Live,
+                            modifier = Modifier.size(8.dp)
+                        )
+                        Text(
+                            text = formatViewers(channel.viewerCount),
+                            color = Color.White,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
-                if (pair.size == 1) Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(4.dp))
+                if (!channel.title.isNullOrBlank()) {
+                    Text(
+                        text = channel.title,
+                        color = Twick.Ink,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                ChannelSubtitleRow(channel = channel)
             }
         }
-        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -1896,11 +1934,16 @@ private fun BrowseChannelLargeList(channels: List<Channel>, onJoinChannel: (Stri
                             if (channel.displayName.isNotBlank()) {
                                 Text(
                                     text = channel.displayName,
-                                    color = Twick.Ink3,
+                                    color = Twick.Ink,
                                     fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
+                                if (channel.isPartner) {
+                                    PartnerBadge(modifier = Modifier.size(13.dp))
+                                }
                             }
                             if (channel.displayName.isNotBlank() && !channel.gameName.isNullOrBlank()) {
                                 Text(
@@ -1975,11 +2018,16 @@ private fun BrowseChannelCompactList(channels: List<Channel>, onJoinChannel: (St
                         if (channel.displayName.isNotBlank() && titleText != channel.displayName) {
                             Text(
                                 text = channel.displayName,
-                                color = Twick.Ink3,
+                                color = Twick.Ink,
                                 fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
+                            if (channel.isPartner) {
+                                PartnerBadge(modifier = Modifier.size(12.dp))
+                            }
                         }
                         if (channel.displayName.isNotBlank() && titleText != channel.displayName && !channel.gameName.isNullOrBlank()) {
                             Text(
@@ -2107,39 +2155,31 @@ private fun DiscoveryBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(Twick.S1.copy(alpha = 0.96f))
-            .border(1.dp, Twick.Hairline, RoundedCornerShape(24.dp))
-            .padding(horizontal = 8.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(start = 58.dp, end = 58.dp, bottom = 8.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(Twick.S1.copy(alpha = 0.92f))
+            .border(1.dp, Twick.Hairline.copy(alpha = 0.7f), RoundedCornerShape(28.dp))
+            .padding(horizontal = 6.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         tabs.forEachIndexed { idx, destination ->
             val isActive = idx == activeTab
-            Row(
+            Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(48.dp)
-                    .clip(RoundedCornerShape(if (isActive) 18.dp else 16.dp))
-                    .background(if (isActive) Twick.AccentSoft else Color.Transparent)
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(if (isActive) Twick.AccentSoft.copy(alpha = 0.82f) else Color.Transparent)
                     .clickable { onTabSelected(idx) }
                     .padding(horizontal = 10.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = destination.icon,
                     contentDescription = destination.label,
-                    tint = if (isActive) Twick.Ink else Twick.Ink3,
-                    modifier = Modifier.size(21.dp)
-                )
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    text = destination.label,
-                    color = if (isActive) Twick.Ink else Twick.Ink3,
-                    fontSize = 12.sp,
-                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium
+                    tint = if (isActive) Twick.Accent else Twick.Ink3,
+                    modifier = Modifier.size(if (isActive) 23.dp else 21.dp)
                 )
             }
         }

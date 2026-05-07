@@ -1,6 +1,8 @@
 package com.example.chatterinomobile.di
 
+import com.example.chatterinomobile.BuildConfig
 import com.example.chatterinomobile.data.remote.api.BttvApi
+import com.example.chatterinomobile.data.remote.api.ChatterinoApi
 import com.example.chatterinomobile.data.remote.api.FfzApi
 import com.example.chatterinomobile.data.remote.api.SevenTvApi
 import com.example.chatterinomobile.data.remote.api.SevenTvCosmeticsApi
@@ -36,7 +38,7 @@ val networkModule = module {
             }
             install(Logging) {
                 logger = Logger.DEFAULT
-                level = LogLevel.INFO
+                level = if (BuildConfig.DEBUG) LogLevel.BODY else LogLevel.INFO
             }
             install(HttpTimeout) {
                 requestTimeoutMillis = 15_000
@@ -50,6 +52,7 @@ val networkModule = module {
     single { SevenTvApi(get()) }
     single { BttvApi(get()) }
     single { FfzApi(get()) }
+    single { ChatterinoApi(get()) }
 
     single { SevenTvCosmeticsApi(get()) }
     single { TwitchOAuthApi(get()) }
@@ -60,5 +63,5 @@ val networkModule = module {
     single { ModerationEventMapper() }
     single { RoomStateMapper() }
     single { UserStateMapper(get()) }
-    single { MessageEnricher(get(), get()) }
+    single { MessageEnricher(get(), get(), get()) }
 }

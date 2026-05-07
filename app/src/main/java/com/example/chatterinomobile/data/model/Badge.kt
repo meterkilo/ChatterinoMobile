@@ -12,5 +12,5 @@ data class Badge(
 
 @Serializable
 enum class BadgeProvider{
-    TWITCH, BTTV, FFZ, SEVENTV
+    TWITCH, BTTV, FFZ, SEVENTV, CHATTERINO
 }

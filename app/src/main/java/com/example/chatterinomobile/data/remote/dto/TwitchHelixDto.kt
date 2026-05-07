@@ -14,6 +14,7 @@ data class HelixUserDto(
     val login: String,
     @SerialName("display_name") val displayName: String,
     @SerialName("profile_image_url") val profileImageUrl: String? = null,
+    @SerialName("broadcaster_type") val broadcasterType: String? = null,
     val description: String? = null
 )
 
@@ -57,6 +58,11 @@ data class HelixListResponseWithPagination<T>(
     val data: List<T> = emptyList(),
     val pagination: HelixPagination? = null,
     val total: Int? = null
+)
+
+@Serializable
+data class HelixTotalResponse(
+    val total: Int = 0
 )
 
 @Serializable

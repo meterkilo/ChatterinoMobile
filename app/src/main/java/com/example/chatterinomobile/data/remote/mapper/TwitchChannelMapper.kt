@@ -13,5 +13,6 @@ fun HelixUserDto.toChannel(stream: HelixStreamDto? = null): Channel = Channel(
     gameName = stream?.gameName,
     title = stream?.title,
     thumbnailUrl = stream?.thumbnailUrl?.replace("{width}", "1280")?.replace("{height}", "720"),
-    profileImageUrl = profileImageUrl
+    profileImageUrl = profileImageUrl,
+    isPartner = broadcasterType == "partner"
 )

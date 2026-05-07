@@ -82,10 +82,12 @@ class DiscoverySnapshotCache(private val root: DiskCacheRoot) {
         val displayName: String,
         val isLive: Boolean = false,
         val viewerCount: Int = 0,
+        val followerCount: Int? = null,
         val gameName: String? = null,
         val title: String? = null,
         val thumbnailUrl: String? = null,
-        val profileImageUrl: String? = null
+        val profileImageUrl: String? = null,
+        val isPartner: Boolean = false
     ) {
         fun toModel() = Channel(
             id = id,
@@ -93,10 +95,12 @@ class DiscoverySnapshotCache(private val root: DiskCacheRoot) {
             displayName = displayName,
             isLive = isLive,
             viewerCount = viewerCount,
+            followerCount = followerCount,
             gameName = gameName,
             title = title,
             thumbnailUrl = thumbnailUrl,
-            profileImageUrl = profileImageUrl
+            profileImageUrl = profileImageUrl,
+            isPartner = isPartner
         )
 
         companion object {
@@ -106,10 +110,12 @@ class DiscoverySnapshotCache(private val root: DiskCacheRoot) {
                 displayName = c.displayName,
                 isLive = c.isLive,
                 viewerCount = c.viewerCount,
+                followerCount = c.followerCount,
                 gameName = c.gameName,
                 title = c.title,
                 thumbnailUrl = c.thumbnailUrl,
-                profileImageUrl = c.profileImageUrl
+                profileImageUrl = c.profileImageUrl,
+                isPartner = c.isPartner
             )
         }
     }

@@ -106,7 +106,10 @@ class ChatRepositoryImpl(
 
     override val messages: Flow<ChatMessage> =
         ircClient.incoming
-            .mapNotNull { raw -> mapper.map(raw) }
+            .mapNotNull { raw ->
+                ensureGlobalCachesLoaded()
+                mapper.map(raw)
+            }
             .map { msg -> enricher.enrich(msg) }
             .shareIn(scope, SharingStarted.Eagerly, replay = 0)
 
@@ -219,6 +222,7 @@ class ChatRepositoryImpl(
                     channelLogin to ChannelHydrationState(
                         channelLogin = channelLogin,
                         channelId = channel.id,
+                        channel = channel,
                         isLoading = true,
                         isReady = false,
                         errorMessage = null
@@ -236,6 +240,7 @@ class ChatRepositoryImpl(
                     channelLogin to ChannelHydrationState(
                         channelLogin = channelLogin,
                         channelId = channel.id,
+                        channel = channel,
                         isLoading = false,
                         isReady = true,
                         errorMessage = null
@@ -247,6 +252,7 @@ class ChatRepositoryImpl(
                     channelLogin to ChannelHydrationState(
                         channelLogin = channelLogin,
                         channelId = channelId,
+                        channel = channelCacheByLogin[channelLogin],
                         isLoading = false,
                         isReady = false,
                         errorMessage = throwable.message ?: "Failed to hydrate channel"

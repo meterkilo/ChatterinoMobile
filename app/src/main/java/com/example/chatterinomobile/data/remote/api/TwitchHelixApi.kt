@@ -7,6 +7,7 @@ import com.example.chatterinomobile.data.remote.dto.HelixListResponse
 import com.example.chatterinomobile.data.remote.dto.HelixListResponseWithPagination
 import com.example.chatterinomobile.data.remote.dto.HelixSearchChannelDto
 import com.example.chatterinomobile.data.remote.dto.HelixStreamDto
+import com.example.chatterinomobile.data.remote.dto.HelixTotalResponse
 import com.example.chatterinomobile.data.remote.dto.HelixUserDto
 import com.example.chatterinomobile.data.repository.AuthRepository
 import io.ktor.client.HttpClient
@@ -55,6 +56,7 @@ class TwitchHelixApi(
 
 
     data class FollowPage(val logins: List<String>, val nextCursor: String?)
+    data class StreamPage(val streams: List<HelixStreamDto>, val nextCursor: String?)
 
     suspend fun getFollowedChannelsPaged(userId: String, after: String? = null): FollowPage {
         val token = authRepository.getAccessToken()
@@ -84,7 +86,11 @@ class TwitchHelixApi(
         return response.data
     }
 
-    suspend fun getStreamsByGameId(gameId: String, limit: Int = 30): List<HelixStreamDto> {
+    suspend fun getStreamsByGameIdPaged(
+        gameId: String,
+        limit: Int = 30,
+        after: String? = null
+    ): StreamPage {
         val token = authRepository.getAccessToken()
         val clientId = authRepository.getClientId()
         val response: HelixListResponseWithPagination<HelixStreamDto> =
@@ -92,8 +98,16 @@ class TwitchHelixApi(
                 applyAuth(clientId, token)
                 parameter("game_id", gameId)
                 parameter("first", limit.coerceIn(1, 100))
+                if (after != null) parameter("after", after)
             }.body()
-        return response.data
+        return StreamPage(
+            streams = response.data,
+            nextCursor = response.pagination?.cursor?.takeIf { it.isNotBlank() }
+        )
+    }
+
+    suspend fun getStreamsByGameId(gameId: String, limit: Int = 30): List<HelixStreamDto> {
+        return getStreamsByGameIdPaged(gameId = gameId, limit = limit).streams
     }
 
     suspend fun getTopStreams(limit: Int = 20): List<HelixStreamDto> {
@@ -119,6 +133,18 @@ class TwitchHelixApi(
                 parameter("live_only", false)
             }.body()
         return response.data
+    }
+
+    suspend fun getChannelFollowerCount(broadcasterId: String): Int {
+        val token = authRepository.getAccessToken()
+        val clientId = authRepository.getClientId()
+        val response: HelixTotalResponse =
+            httpClient.get("$BASE_URL/channels/followers") {
+                applyAuth(clientId, token)
+                parameter("broadcaster_id", broadcasterId)
+                parameter("first", 1)
+            }.body()
+        return response.total
     }
 
     suspend fun getChannelBadges(broadcasterId: String): List<HelixBadgeSetDto> {

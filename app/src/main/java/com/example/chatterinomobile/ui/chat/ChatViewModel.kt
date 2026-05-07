@@ -1,22 +1,25 @@
-package com.example.chatterinomobile.ui.chat
+    package com.example.chatterinomobile.ui.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatterinomobile.data.model.ChatMessage
 import com.example.chatterinomobile.data.model.ModerationEvent
+import com.example.chatterinomobile.data.model.Paint
 import com.example.chatterinomobile.data.model.ReplyMetadata
 import com.example.chatterinomobile.data.model.SendMessageResult
 import com.example.chatterinomobile.data.repository.ChatRepository
+import com.example.chatterinomobile.data.repository.PaintRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 class ChatViewModel(
-    private val chatRepository: ChatRepository
+    private val chatRepository: ChatRepository,
+    private val paintRepository: PaintRepository
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(ChatUiState())
+    private val _uiState = MutableStateFlow(ChatUiState(paintsByUserId = paintRepository.snapshot()))
     val uiState = _uiState.asStateFlow()
 
     private var liveCollector: Job? = null
@@ -39,6 +42,14 @@ class ChatViewModel(
                     is ModerationEvent.UserTimedOut -> update {
                         copy(bannedLogins = bannedLogins + event.targetLogin)
                     }
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            paintRepository.paintAssignments.collect { assignment ->
+                update {
+                    copy(paintsByUserId = paintsByUserId + (assignment.twitchUserId to assignment.paint))
                 }
             }
         }
@@ -126,6 +137,7 @@ data class ChatUiState(
     val recentMessages: List<ChatMessage> = emptyList(),
     val deletedIds: Set<String> = emptySet(),
     val bannedLogins: Set<String> = emptySet(),
+    val paintsByUserId: Map<String, Paint> = emptyMap(),
     val sendStatusMessage: String? = null,
     val sendErrorMessage: String? = null
 )

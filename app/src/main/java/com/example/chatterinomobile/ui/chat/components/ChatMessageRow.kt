@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.example.chatterinomobile.data.model.ChatMessage
 import com.example.chatterinomobile.data.model.MessageFragment
 import com.example.chatterinomobile.data.model.MessageType
+import com.example.chatterinomobile.data.model.Paint
 import com.example.chatterinomobile.data.model.ReplyMetadata
 import com.example.chatterinomobile.ui.theme.Twick
 import java.text.SimpleDateFormat
@@ -102,7 +103,8 @@ fun ChatMessageRow(
     showTimestamp: Boolean,
     deleted: Boolean,
     highlight: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    paintOverride: Paint? = null
 ) {
     val type = message.Type
     if (type is MessageType.System) {
@@ -139,7 +141,8 @@ fun ChatMessageRow(
             MessageBody(
                 message = message,
                 showTimestamp = showTimestamp,
-                deleted = deleted
+                deleted = deleted,
+                paintOverride = paintOverride
             )
         }
     }
@@ -149,13 +152,16 @@ fun ChatMessageRow(
 private fun MessageBody(
     message: ChatMessage,
     showTimestamp: Boolean,
-    deleted: Boolean
+    deleted: Boolean,
+    paintOverride: Paint?
 ) {
     val author = message.author
     val authorColor = remember(author.color, author.login) {
         val parsedColor = if (author.color != null) parseHexColor(author.color) else null
         parsedColor ?: deterministicColor(author.login)
     }
+    val usernameSuffix = if (message.Type !is MessageType.Action) ": " else " "
+    val resolvedPaint = paintOverride ?: author.paint
 
     val text = buildAnnotatedString {
         if (showTimestamp) {
@@ -165,18 +171,13 @@ private fun MessageBody(
             append("  ")
         }
 
-        message.badges.forEachIndexed { index, _ ->
+        message.badges.forEachIndexed { index, badge ->
+            if (badge.imageURL.isBlank()) return@forEachIndexed
             appendInlineContent(badgeId(index), "·")
             append(" ")
         }
 
-        appendInlineContent(USERNAME_ID, author.displayName)
-
-        if (message.Type !is MessageType.Action) {
-            withStyle(SpanStyle(color = Twick.Ink3)) { append(": ") }
-        } else {
-            append(" ")
-        }
+        appendInlineContent(USERNAME_ID, author.displayName + usernameSuffix)
 
         if (deleted) {
             withStyle(SpanStyle(color = Twick.Ink3, fontStyle = FontStyle.Italic)) {
@@ -190,15 +191,14 @@ private fun MessageBody(
         }
     }
 
-    val inline = remember(message.id, message.badges, author.id, author.paint) {
-        buildInlineContent(
-            badges = message.badges,
-            displayName = author.displayName,
-            paint = author.paint,
-            authorColor = authorColor,
-            fragments = message.fragment
-        )
-    }
+    val inline = buildInlineContent(
+        badges = message.badges,
+        displayName = author.displayName,
+        usernameSuffix = usernameSuffix,
+        paint = resolvedPaint,
+        authorColor = authorColor,
+        fragments = message.fragment
+    )
 
     Text(
         text = text,

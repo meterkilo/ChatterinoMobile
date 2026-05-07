@@ -6,8 +6,10 @@ data class Channel(
     val displayName: String,
     val isLive: Boolean = false,
     val viewerCount: Int = 0,
+    val followerCount: Int? = null,
     val gameName: String? = null,
     val title: String? = null,
     val thumbnailUrl: String? = null,
-    val profileImageUrl: String? = null
+    val profileImageUrl: String? = null,
+    val isPartner: Boolean = false
 )

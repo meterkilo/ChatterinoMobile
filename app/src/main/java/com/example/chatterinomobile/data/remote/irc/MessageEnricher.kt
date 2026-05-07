@@ -2,29 +2,43 @@ package com.example.chatterinomobile.data.remote.irc
 
 import com.example.chatterinomobile.data.model.ChatMessage
 import com.example.chatterinomobile.data.model.MessageFragment
+import com.example.chatterinomobile.data.repository.BadgeRepository
 import com.example.chatterinomobile.data.repository.EmoteRepository
 import com.example.chatterinomobile.data.repository.PaintRepository
 
 class MessageEnricher(
+    private val badgeRepository: BadgeRepository,
     private val emoteRepository: EmoteRepository,
     private val paintRepository: PaintRepository
 ) {
 
-    fun enrich(message: ChatMessage): ChatMessage {
+    suspend fun enrich(message: ChatMessage): ChatMessage {
+        badgeRepository.loadThirdPartyBadgesForUser(message.author.id)
+        paintRepository.requestPaintForUser(message.author.id)
+
         val paint = paintRepository.findPaintForUser(message.author.id)
+        val badges = enrichBadges(message)
         val swapped = swapThirdPartyEmotes(
             fragments = message.fragment,
             channelId = message.channelId
         )
 
-        if (paint == null && swapped === message.fragment) return message
+        if (paint == null && swapped === message.fragment && badges === message.badges) return message
 
         val author = if (paint != null) message.author.copy(paint = paint) else message.author
         return message.copy(
             author = author,
-            fragment = swapped
+            fragment = swapped,
+            badges = badges
         )
     }
+
+    private fun enrichBadges(message: ChatMessage) =
+        badgeRepository.findThirdPartyBadges(message.author.id)
+            .filterNot { thirdParty -> message.badges.any { it.id == thirdParty.id } }
+            .takeIf { it.isNotEmpty() }
+            ?.let { message.badges + it }
+            ?: message.badges
 
     private fun swapThirdPartyEmotes(
         fragments: List<MessageFragment>,
@@ -35,24 +49,26 @@ class MessageEnricher(
             return fragments
         }
 
+        var foundEmote = false
         val out = ArrayList<MessageFragment>(fragments.size)
         for (fragment in fragments) {
             if (fragment !is MessageFragment.Text) {
                 out.add(fragment)
                 continue
             }
-            expandTextFragment(fragment.content, channelId, out)
+            foundEmote = expandTextFragment(fragment.content, channelId, out) || foundEmote
         }
-        return out
+        return if (foundEmote) out else fragments
     }
 
     private fun expandTextFragment(
         text: String,
         channelId: String,
         out: MutableList<MessageFragment>
-    ) {
-        if (text.isEmpty()) return
+    ): Boolean {
+        if (text.isEmpty()) return false
         val buffer = StringBuilder()
+        var foundEmote = false
         var i = 0
         val n = text.length
         while (i < n) {
@@ -68,6 +84,7 @@ class MessageEnricher(
 
             val emote = emoteRepository.findEmote(word, channelId)
             if (emote != null) {
+                foundEmote = true
                 if (buffer.isNotEmpty()) {
                     out.add(MessageFragment.Text(buffer.toString()))
                     buffer.clear()
@@ -76,7 +93,9 @@ class MessageEnricher(
                     MessageFragment.Emote(
                         id = emote.id,
                         name = emote.name,
-                        url = emote.urls.x3
+                        url = emote.urls.x3,
+                        aspectRatio = emote.aspectRatio,
+                        isZeroWidth = emote.isZeroWidth
                     )
                 )
             } else {
@@ -86,6 +105,7 @@ class MessageEnricher(
         if (buffer.isNotEmpty()) {
             out.add(MessageFragment.Text(buffer.toString()))
         }
+        return foundEmote
     }
 
     private fun String.containsEmoteCandidate(): Boolean {

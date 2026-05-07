@@ -39,6 +39,7 @@ class ChannelTabsViewModel(
             val channelId = h?.channelId
             ActiveChannelState(
                 channelLogin = login,
+                channel = h?.channel,
                 hydration = h,
                 roomState = channelId?.let(rooms::get) ?: rooms[login],
                 userState = channelId?.let(users::get) ?: users[login]
@@ -114,6 +115,7 @@ class ChannelTabsViewModel(
 
 data class ActiveChannelState(
     val channelLogin: String? = null,
+    val channel: com.example.chatterinomobile.data.model.Channel? = null,
     val hydration: ChannelHydrationState? = null,
     val roomState: RoomState? = null,
     val userState: UserChatState? = null

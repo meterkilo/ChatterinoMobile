@@ -8,7 +8,13 @@ sealed class MessageFragment {
     data class Text(val content: String) : MessageFragment()
 
     @Serializable
-    data class Emote(val id: String, val name: String, val url: String) : MessageFragment()
+    data class Emote(
+        val id: String,
+        val name: String,
+        val url: String,
+        val aspectRatio: Float? = null,
+        val isZeroWidth: Boolean = false
+    ) : MessageFragment()
 
     @Serializable
     data class Mention(val username: String) : MessageFragment()

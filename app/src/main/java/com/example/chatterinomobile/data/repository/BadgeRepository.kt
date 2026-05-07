@@ -8,6 +8,8 @@ interface BadgeRepository {
 
     suspend fun loadChannelBadges(channelId: String)
 
+    suspend fun loadThirdPartyBadgesForUser(twitchUserId: String)
+
     fun findTwitchBadge(setId: String, version: String, channelId: String? = null): Badge?
 
     fun findThirdPartyBadges(twitchUserId: String): List<Badge>

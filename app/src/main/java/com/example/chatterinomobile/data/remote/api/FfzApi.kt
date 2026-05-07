@@ -1,6 +1,7 @@
 package com.example.chatterinomobile.data.remote.api
 
 import com.example.chatterinomobile.data.remote.dto.FfzEmoteDto
+import com.example.chatterinomobile.data.remote.dto.FfzBadgesResponseDto
 import com.example.chatterinomobile.data.remote.dto.FfzGlobalResponseDto
 import com.example.chatterinomobile.data.remote.dto.FfzRoomResponseDto
 import io.ktor.client.HttpClient
@@ -22,6 +23,12 @@ class FfzApi(private val httpClient: HttpClient) {
         val setId = response.room.set ?: return emptyList()
         return response.sets[setId.toString()]?.emoticons.orEmpty()
     }
+
+    suspend fun getBadges(): FfzBadgesResponseDto =
+        httpClient.get("$BASE_URL/badges/ids").body()
+
+    suspend fun getRoom(channelId: String): FfzRoomResponseDto =
+        httpClient.get("$BASE_URL/room/id/$channelId").body()
 
     companion object {
         private const val BASE_URL = "https://api.frankerfacez.com/v1"

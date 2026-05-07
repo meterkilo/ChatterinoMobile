@@ -10,7 +10,7 @@ sealed class Paint {
     @Serializable
     data class Solid(
         override val id: String,
-        val color : Long,
+        val color: Long,
         override val shadows: List<Shadow> = emptyList()
     ) : Paint()
 
@@ -28,6 +28,8 @@ sealed class Paint {
     data class Image(
         override val id: String,
         val url: String,
+        val aspectRatio: Float = 4f,
+        val animated: Boolean = false,
         override val shadows: List<Shadow> = emptyList()
     ) : Paint()
 }

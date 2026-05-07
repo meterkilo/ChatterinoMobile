@@ -8,13 +8,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -28,6 +27,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.chatterinomobile.data.model.RoomState
@@ -36,6 +36,7 @@ import com.example.chatterinomobile.ui.channels.ChannelTabsViewModel
 import com.example.chatterinomobile.ui.chat.components.ChatInputBar
 import com.example.chatterinomobile.ui.chat.components.ChatList
 import com.example.chatterinomobile.ui.theme.Twick
+import coil.compose.AsyncImage
 
 @Composable
 fun ChatRoute(
@@ -70,13 +71,13 @@ fun ChatScreen(
             .background(Twick.Bg)
     ) {
         VideoPlaceholder()
-        StreamerMetaRow(login = activeChannel.channelLogin, onBack = onBack)
-        TabStrip()
+        StreamerMetaRow(activeChannel = activeChannel, onBack = onBack)
 
         Box(modifier = Modifier.weight(1f)) {
             ChatList(
                 messages = state.recentMessages,
                 deletedIds = state.deletedIds,
+                paintsByUserId = state.paintsByUserId,
                 showTimestamp = false,
                 modifier = Modifier.fillMaxSize(),
                 currentUserLogin = activeChannel.userState?.login
@@ -115,9 +116,14 @@ private fun VideoPlaceholder() {
 
 @Composable
 private fun StreamerMetaRow(
-    login: String?,
+    activeChannel: ActiveChannelState,
     onBack: () -> Unit
 ) {
+    val login = activeChannel.channel?.displayName ?: activeChannel.channelLogin
+    val profileImageUrl = activeChannel.channel?.profileImageUrl
+    val channel = activeChannel.channel
+    val streamTitle = channel?.title?.takeIf { it.isNotBlank() }
+    val category = channel?.gameName?.takeIf { it.isNotBlank() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -139,63 +145,65 @@ private fun StreamerMetaRow(
                 .background(Twick.Accent),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = login?.firstOrNull()?.uppercase() ?: "?",
-                color = Color.White,
-                fontWeight = FontWeight.Bold
-            )
+            if (!profileImageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = profileImageUrl,
+                    contentDescription = login,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(
+                    text = login?.firstOrNull()?.uppercase() ?: "?",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = login ?: "channel",
-                color = Twick.Ink,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp
-            )
-            Text(
-                text = "live",
-                color = Twick.Ink3,
-                fontSize = 11.sp
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = login ?: "channel",
+                    color = Twick.Ink,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (channel?.isPartner == true) {
+                    PartnerBadge()
+                }
+            }
+            if (streamTitle != null) {
+                Text(
+                    text = streamTitle,
+                    color = Twick.Ink3,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (category != null) {
+                Text(
+                    text = category,
+                    color = Twick.Ink3,
+                    fontSize = 11.sp
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun TabStrip() {
-    val tabs = listOf("Chat", "About", "Clips", "Mods")
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp)
-    ) {
-        tabs.forEachIndexed { index, label ->
-            val isActive = index == 0
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(end = 18.dp)
-            ) {
-                Text(
-                    text = label,
-                    color = if (isActive) Twick.Ink else Twick.Ink3,
-                    fontSize = 13.sp,
-                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
-                    modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)
-                )
-                Box(
-                    modifier = Modifier
-                        .height(2.dp)
-                        .width(28.dp)
-                        .background(if (isActive) Twick.Accent else Color.Transparent)
-                )
-            }
-        }
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(Twick.Hairline)
+private fun PartnerBadge(modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = Icons.Filled.Verified,
+        contentDescription = "Partner",
+        tint = Twick.Accent,
+        modifier = modifier.size(14.dp)
     )
 }
 

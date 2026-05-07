@@ -58,6 +58,8 @@ val repositoryModule = module {
         BadgeRepositoryImpl(
             helixApi = get(),
             sevenTvCosmeticsApi = get(),
+            ffzApi = get(),
+            chatterinoApi = get(),
             diskCache = get()
         )
     } bind BadgeRepository::class
