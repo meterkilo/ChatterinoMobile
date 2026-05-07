@@ -1,0 +1,25 @@
+package com.example.chatterinomobile.data.remote.mapper
+
+import com.example.chatterinomobile.data.model.Badge
+import com.example.chatterinomobile.data.model.BadgeProvider
+import com.example.chatterinomobile.data.remote.dto.FfzBadgeDto
+
+fun FfzBadgeDto.toDomain(): Badge {
+    val imageUrl = normalizeUrl(urls["4"] ?: urls["2"] ?: urls["1"].orEmpty())
+    return Badge(
+        id = "ffz:$id",
+        imageURL = imageUrl,
+        description = title.ifBlank { name },
+        provider = BadgeProvider.FFZ
+    )
+}
+
+private fun normalizeUrl(url: String): String {
+    val trimmed = url.trim()
+    return when {
+        trimmed.isBlank() -> ""
+        trimmed.startsWith("//") -> "https:$trimmed"
+        trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+        else -> "https://$trimmed"
+    }
+}
